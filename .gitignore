@@ -1,0 +1,17 @@
+# Build output
+/plugyard
+/plugyard.exe
+/dist/
+
+# Go
+*.test
+*.out
+
+# Editors and OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Local Claude settings
+.claude/settings.local.json
