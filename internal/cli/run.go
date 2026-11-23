@@ -9,7 +9,10 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/Amraa1/plugyard/internal/charger"
+	"github.com/Amraa1/plugyard/internal/control"
+	"github.com/Amraa1/plugyard/internal/datadir"
 	"github.com/Amraa1/plugyard/internal/model"
+	"github.com/Amraa1/plugyard/internal/site"
 )
 
 // passwordEnv is read when --password is not given, so that the password
@@ -22,6 +25,7 @@ func newRun() *cobra.Command {
 		id                 string
 		password           string
 		insecureSkipVerify bool
+		speed              float64
 	)
 
 	cmd := &cobra.Command{
@@ -51,11 +55,25 @@ func newRun() *cobra.Command {
 					Password:           password,
 					InsecureSkipVerify: insecureSkipVerify,
 				},
-				Log: newLogPrinter(cmd.OutOrStdout()),
+				Speed: speed,
+				Log:   newLogPrinter(cmd.OutOrStdout()),
 			})
 			if err != nil {
 				return &UsageError{Err: err}
 			}
+
+			// A charger started with run lives in an implicit site named
+			// after its charge point ID. Serving the site's socket is what
+			// lets ps and exec reach it from another terminal.
+			dir, err := datadir.Path()
+			if err != nil {
+				return err
+			}
+			server, err := control.Serve(dir, site.New(id, c))
+			if err != nil {
+				return err
+			}
+			defer server.Close()
 
 			return c.Run(cmd.Context())
 		},
@@ -64,6 +82,7 @@ func newRun() *cobra.Command {
 	flags := cmd.Flags()
 	flags.StringVar(&csmsURL, "csms", "", "CSMS URL, ws:// or wss:// (required)")
 	flags.StringVar(&id, "id", "", "charge point ID (required)")
+	flags.Float64Var(&speed, "speed", 1, "multiply the rate of EV charging and energy accumulation")
 	flags.StringVar(&password, "password", "", "password for HTTP Basic authentication; defaults to $"+passwordEnv)
 	flags.BoolVar(&insecureSkipVerify, "insecure-skip-verify", false, "do not verify the CSMS's TLS certificate")
 	_ = cmd.MarkFlagRequired("csms")

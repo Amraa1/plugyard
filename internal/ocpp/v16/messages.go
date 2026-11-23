@@ -88,3 +88,98 @@ type StatusNotificationRequest struct {
 }
 
 type StatusNotificationResponse struct{}
+
+// Actions of a transaction.
+const (
+	ActionAuthorize        = "Authorize"
+	ActionStartTransaction = "StartTransaction"
+	ActionStopTransaction  = "StopTransaction"
+	ActionMeterValues      = "MeterValues"
+)
+
+// AuthorizationAccepted is the idTagInfo status of a tag that may charge.
+const AuthorizationAccepted = "Accepted"
+
+// Reasons for stopping a transaction.
+const (
+	ReasonLocal          = "Local"
+	ReasonEVDisconnected = "EVDisconnected"
+	ReasonRemote         = "Remote"
+	ReasonDeAuthorized   = "DeAuthorized"
+	ReasonPowerLoss      = "PowerLoss"
+	ReasonOther          = "Other"
+)
+
+// Measurands plugyard can report.
+const (
+	MeasurandEnergy = "Energy.Active.Import.Register"
+	MeasurandPower  = "Power.Active.Import"
+	MeasurandSoC    = "SoC"
+)
+
+// Reading contexts.
+const (
+	ContextSamplePeriodic   = "Sample.Periodic"
+	ContextTransactionBegin = "Transaction.Begin"
+	ContextTransactionEnd   = "Transaction.End"
+)
+
+type IDTagInfo struct {
+	Status      string `json:"status"`
+	ParentIDTag string `json:"parentIdTag,omitempty"`
+	ExpiryDate  *Time  `json:"expiryDate,omitempty"`
+}
+
+type AuthorizeRequest struct {
+	IDTag string `json:"idTag"`
+}
+
+type AuthorizeResponse struct {
+	IDTagInfo IDTagInfo `json:"idTagInfo"`
+}
+
+type StartTransactionRequest struct {
+	ConnectorID int    `json:"connectorId"`
+	IDTag       string `json:"idTag"`
+	MeterStart  int    `json:"meterStart"`
+	Timestamp   Time   `json:"timestamp"`
+}
+
+type StartTransactionResponse struct {
+	IDTagInfo     IDTagInfo `json:"idTagInfo"`
+	TransactionID int       `json:"transactionId"`
+}
+
+type StopTransactionRequest struct {
+	IDTag           string       `json:"idTag,omitempty"`
+	MeterStop       int          `json:"meterStop"`
+	Timestamp       Time         `json:"timestamp"`
+	TransactionID   int          `json:"transactionId"`
+	Reason          string       `json:"reason,omitempty"`
+	TransactionData []MeterValue `json:"transactionData,omitempty"`
+}
+
+type StopTransactionResponse struct {
+	IDTagInfo *IDTagInfo `json:"idTagInfo,omitempty"`
+}
+
+type MeterValuesRequest struct {
+	ConnectorID   int          `json:"connectorId"`
+	TransactionID *int         `json:"transactionId,omitempty"`
+	MeterValue    []MeterValue `json:"meterValue"`
+}
+
+type MeterValuesResponse struct{}
+
+type MeterValue struct {
+	Timestamp    Time           `json:"timestamp"`
+	SampledValue []SampledValue `json:"sampledValue"`
+}
+
+type SampledValue struct {
+	Value     string `json:"value"`
+	Context   string `json:"context,omitempty"`
+	Measurand string `json:"measurand,omitempty"`
+	Location  string `json:"location,omitempty"`
+	Unit      string `json:"unit,omitempty"`
+}

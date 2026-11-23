@@ -65,6 +65,7 @@ func (l *logBook) waitFor(t *testing.T, kind charger.EntryKind, substr string) {
 
 // running is a charger powered on for the length of a test.
 type running struct {
+	*charger.Charger
 	log  *logBook
 	stop func() // orderly shutdown; waits for Run to return
 }
@@ -80,6 +81,7 @@ func powerOn(t *testing.T, cfg charger.Config) *running {
 		CallTimeout:  2 * time.Second,
 		ReconnectMin: 10 * time.Millisecond,
 		ReconnectMax: 50 * time.Millisecond,
+		Tick:         10 * time.Millisecond,
 	}
 
 	c, err := charger.New(cfg)
@@ -106,7 +108,7 @@ func powerOn(t *testing.T, cfg charger.Config) *running {
 		})
 	}
 	t.Cleanup(stop)
-	return &running{log: log, stop: stop}
+	return &running{Charger: c, log: log, stop: stop}
 }
 
 func TestBootHandshake(t *testing.T) {

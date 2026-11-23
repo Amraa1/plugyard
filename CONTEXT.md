@@ -43,3 +43,15 @@ _Avoid_: Charger ID, station ID, serial
 **CSMS**:
 The backend system under test that chargers connect to and exchange OCPP messages with.
 _Avoid_: Central system, backend, server
+
+**Transaction**:
+One period of charging on a connector, from the moment the CSMS is told it started to the moment it is told it stopped, as in OCPP 1.6.
+_Avoid_: Session, charging session, charge
+
+**Tag**:
+The identifier a driver presents to a charger to start or stop a transaction. OCPP 1.6 carries it in the `idTag` field.
+_Avoid_: Card, RFID, token, badge
+
+**Action**:
+Something done to a running charger from outside, such as plugging in an EV, presenting a tag or raising a fault.
+_Avoid_: Command, operation, event

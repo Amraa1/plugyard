@@ -7,6 +7,7 @@ require (
 	github.com/lorenzodonini/ocpp-go v0.19.0
 	github.com/spf13/cobra v1.10.2
 	go.yaml.in/yaml/v3 v3.0.4
+	golang.org/x/sys v0.0.0-20220804214406-8e32c043e418
 )
 
 require (
