@@ -43,39 +43,47 @@ func startSite(t *testing.T, dataDir, name string, csms *csmstest.CSMS, ids ...s
 		StartOn:    model.StartOnTap,
 	}
 
-	runCtx, cancel := context.WithCancel(ctx)
-	var chargers []*charger.Charger
-	done := make(chan struct{})
+	var members []site.Member
 	for _, id := range ids {
-		c, err := charger.New(charger.Config{
-			ID: id, Model: m, CSMS: charger.CSMS{URL: csms.URL()},
-			Timing: charger.Timing{CallTimeout: 2 * time.Second, Tick: 10 * time.Millisecond},
-		})
-		if err != nil {
-			t.Fatal(err)
-		}
-		chargers = append(chargers, c)
-		go func() {
-			_ = c.Run(runCtx)
-			done <- struct{}{}
-		}()
+		members = append(members, site.Member{ID: id, Name: "n-" + id, Model: m, CSMS: charger.CSMS{URL: csms.URL()}})
 	}
+	s, err := site.New(site.Config{
+		Name:   name,
+		Timing: charger.Timing{CallTimeout: 2 * time.Second, Tick: 10 * time.Millisecond},
+	}, members)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	runCtx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() {
+		_ = s.Run(runCtx, nil)
+		close(done)
+	}()
 	t.Cleanup(func() {
 		cancel()
-		for range ids {
-			<-done
-		}
+		<-done
 	})
 	for _, id := range ids {
 		csms.WaitForCalls(t, id, v16.ActionStatusNotification, 1)
 	}
 
-	server, err := control.Serve(dataDir, site.New(name, chargers...), nil)
+	server, err := control.Serve(dataDir, s, nil)
 	if err != nil {
 		t.Fatalf("Serve: %v", err)
 	}
 	t.Cleanup(server.Close)
 	return server
+}
+
+func emptySite(t *testing.T, name string) *site.Site {
+	t.Helper()
+	s, err := site.New(site.Config{Name: name}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return s
 }
 
 func discover(t *testing.T, dataDir string) []*control.Client {
@@ -197,7 +205,7 @@ func TestServeRefusesASiteThatIsAlreadyRunning(t *testing.T) {
 	dir := shortTempDir(t)
 	startSite(t, dir, "depot", csms, "A")
 
-	_, err := control.Serve(dir, site.New("depot"), nil)
+	_, err := control.Serve(dir, emptySite(t, "depot"), nil)
 	if !errors.Is(err, control.ErrAlreadyRunning) {
 		t.Errorf("second Serve returned %v, want ErrAlreadyRunning", err)
 	}
@@ -222,7 +230,7 @@ func TestSocketLeftByADeadProcessIsCleanedUp(t *testing.T) {
 	if err := os.WriteFile(stale, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	server, err := control.Serve(dir, site.New("depot"), nil)
+	server, err := control.Serve(dir, emptySite(t, "depot"), nil)
 	if err != nil {
 		t.Fatalf("Serve over a dead socket: %v", err)
 	}
@@ -249,7 +257,7 @@ func TestSocketPathIsShortAndStable(t *testing.T) {
 func TestServeExplainsADataDirectoryPathThatIsTooLong(t *testing.T) {
 	dir := shortTempDir(t) + "/" + strings.Repeat("deep/", 30)
 
-	_, err := control.Serve(dir, site.New("depot"), nil)
+	_, err := control.Serve(dir, emptySite(t, "depot"), nil)
 	if err == nil || !strings.Contains(err.Error(), "too long for a socket") || !strings.Contains(err.Error(), "PLUGYARD_DATA_DIR") {
 		t.Errorf("Serve returned %v, want an explanation that names PLUGYARD_DATA_DIR", err)
 	}

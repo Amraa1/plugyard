@@ -78,9 +78,24 @@ func Discover(ctx context.Context, dataDir string) ([]*Client, error) {
 
 // Chargers returns the state of every charger in the site.
 func (c *Client) Chargers(ctx context.Context) ([]ChargerState, error) {
-	var states []ChargerState
-	err := c.do(ctx, http.MethodGet, "/v1/chargers", nil, &states)
-	return states, err
+	var wire []wireState
+	if err := c.do(ctx, http.MethodGet, "/v1/chargers", nil, &wire); err != nil {
+		return nil, err
+	}
+	states := make([]ChargerState, len(wire))
+	for i, w := range wire {
+		states[i] = w.ChargerState
+		states[i].Powered = w.Powered
+	}
+	return states, nil
+}
+
+// Power powers chargers of the site on or off, or removes them, and returns
+// one result per charge point ID, in the order given.
+func (c *Client) Power(ctx context.Context, req PowerRequest) ([]ExecResult, error) {
+	var results []ExecResult
+	err := c.do(ctx, http.MethodPost, "/v1/power", req, &results)
+	return results, err
 }
 
 // Exec runs an action on chargers of the site and returns one result per

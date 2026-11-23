@@ -11,3 +11,5 @@ Charger state is stored in one SQLite database file per site in the per-user dat
 
 - OCPP message logs are kept out of the database, in rotating plain files beside it.
 - Schema changes between releases need migrations.
+- A charger's state is one JSON document in one row, because it is always read and written whole. Chargers that save at the same moment share a database transaction, so a site of thousands saving meter readings costs one write.
+- Names are unique across the machine but each site has its own file, so creating a charger means reading the names of every site.

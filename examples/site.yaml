@@ -3,7 +3,8 @@
 #   plugyard site validate -f examples/site.yaml    check it and list the chargers
 #   plugyard site up -f examples/site.yaml          start them (add -d for the background)
 #   plugyard ps                                     from a second terminal
-#   plugyard site down -f examples/site.yaml        shut them down
+#   plugyard site stop -f examples/site.yaml        shut them down; their state is kept
+#   plugyard site down -f examples/site.yaml --reset    shut them down and start over next time
 name: demo
 
 csms:
@@ -25,4 +26,5 @@ chargers:
   lobby:
     model: ./wallbox.Chargerfile
     id: "LOBBY-1"
+    name: front-desk      # optional: the others get a made-up name such as brisk_volt
     config: { MeterValueSampleInterval: 10 }

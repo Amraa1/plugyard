@@ -1,8 +1,10 @@
 // Package datadir locates plugyard's per-user data directory, which holds
-// the sockets of running sites and, later, their saved state and logs.
+// the sockets of running sites, their saved state and their logs.
 package datadir
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"os"
 	"path/filepath"
@@ -42,4 +44,13 @@ func Path() (string, error) {
 		}
 	}
 	return "", errors.New("cannot work out where to keep plugyard's data; set " + Env)
+}
+
+// SiteBase returns the path, without extension, of the files a site keeps in
+// the data directory: its socket, its saved state and its log. The name is a
+// short hash, because site names may be long or contain characters that file
+// names cannot, and socket paths have a tight length limit.
+func SiteBase(dataDir, siteName string) string {
+	sum := sha256.Sum256([]byte(siteName))
+	return filepath.Join(dataDir, "s-"+hex.EncodeToString(sum[:6]))
 }

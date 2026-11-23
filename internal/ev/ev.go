@@ -151,3 +151,16 @@ func ParsePercent(s string) (float64, error) {
 	}
 	return value / 100, nil
 }
+
+// State is a plugged-in EV as it is saved: its parameters and how far it has
+// charged.
+type State struct {
+	Params Params  `json:"params"`
+	SoC    float64 `json:"soc"`
+}
+
+// State returns the EV as it is now, for saving.
+func (e *EV) State() State { return State{Params: e.params, SoC: e.soc} }
+
+// Restore returns the EV described by a saved state.
+func Restore(s State) *EV { return &EV{params: s.Params, soc: s.SoC} }
