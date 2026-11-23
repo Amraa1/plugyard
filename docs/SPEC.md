@@ -1,6 +1,6 @@
 # plugyard V1 specification
 
-Status: agreed design, not yet implemented.
+Status: agreed and reviewed design, not yet implemented.
 Terms in **bold** on first use are defined in [CONTEXT.md](../CONTEXT.md).
 
 ## 1. Purpose
@@ -290,15 +290,3 @@ steps:
 - Prebuilt binaries for Windows, Linux and macOS, x86-64 and ARM64, attached to GitHub Releases and built automatically on each version tag
 - `go install github.com/Amraa1/plugyard@latest`
 - Homebrew, Scoop and winget later, on demand
-
-## 13. Details filled in while writing
-
-These were not discussed explicitly and are proposals to confirm or change:
-
-1. Site commands select a site with `-s, --site <name>` or `-f, --file <path>`, since the site is optional and optional values are flags.
-2. Exit codes are `0`, `1` and `2` as listed in section 4.
-3. `--speed` can be given on `site up` or as `speed:` in the site file.
-4. `startTag` is the Chargerfile field holding the tag used with `startOn: plug`.
-5. `csms.insecureSkipVerify` is the site-file field for skipping certificate verification.
-6. The list of CSMS-initiated operations in section 8 is the Core, Remote Trigger and Smart Charging set.
-7. The data directory paths in section 9.
