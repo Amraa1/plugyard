@@ -1,0 +1,142 @@
+package ev
+
+import (
+	"math"
+	"testing"
+	"time"
+)
+
+func near(a, b, tolerance float64) bool { return math.Abs(a-b) <= tolerance }
+
+func TestPowerFollowsTheChargeCurve(t *testing.T) {
+	cases := []struct {
+		soc  float64
+		want float64
+	}{
+		{0.20, 50000}, // full power below 80%
+		{0.80, 50000},
+		{0.90, 27500}, // halfway down the taper: 55% of full power
+		{0.99, 7250},
+	}
+	for _, tc := range cases {
+		e := New(Params{BatteryWh: 60000, SoC: tc.soc, TargetSoC: 1})
+		if got := e.Power(50000); !near(got, tc.want, 1) {
+			t.Errorf("at %.0f%% power = %.0f W, want %.0f W", tc.soc*100, got, tc.want)
+		}
+	}
+}
+
+func TestPowerIsLimitedByTheEV(t *testing.T) {
+	e := New(Params{BatteryWh: 60000, SoC: 0.2, MaxPowerW: 11000, TargetSoC: 1})
+	if got := e.Power(50000); got != 11000 {
+		t.Errorf("power = %.0f W, want the EV's 11000 W limit", got)
+	}
+	if got := e.Power(7400); got != 7400 {
+		t.Errorf("power = %.0f W, want the connector's 7400 W", got)
+	}
+}
+
+func TestChargeAddsEnergyWithoutLosses(t *testing.T) {
+	e := New(Params{BatteryWh: 60000, SoC: 0.20, TargetSoC: 1})
+
+	energy := e.Charge(50000, 30*time.Minute)
+
+	if !near(energy, 25000, 1) {
+		t.Errorf("energy = %.0f Wh, want 25000 Wh for 30 minutes at 50 kW", energy)
+	}
+	if want := 0.20 + 25000.0/60000; !near(e.SoC(), want, 1e-6) {
+		t.Errorf("SoC = %.4f, want %.4f", e.SoC(), want)
+	}
+}
+
+func TestChargeStopsAtTheTarget(t *testing.T) {
+	e := New(Params{BatteryWh: 60000, SoC: 0.20, TargetSoC: 0.80})
+
+	energy := e.Charge(50000, 24*time.Hour)
+
+	if !near(energy, 36000, 1) {
+		t.Errorf("energy = %.0f Wh, want 36000 Wh to go from 20%% to 80%%", energy)
+	}
+	if !e.Full() || !near(e.SoC(), 0.80, 1e-9) {
+		t.Errorf("SoC = %.4f, full = %v; want 0.80 and full", e.SoC(), e.Full())
+	}
+	if got := e.Power(50000); got != 0 {
+		t.Errorf("a full EV draws %.0f W, want 0", got)
+	}
+	if more := e.Charge(50000, time.Hour); more != 0 {
+		t.Errorf("a full EV took %.0f Wh more, want 0", more)
+	}
+}
+
+func TestChargeTapersAbove80Percent(t *testing.T) {
+	// From 80% to 100% of 60 kWh is 12 kWh. At a constant 50 kW that takes
+	// 14.4 minutes; with the taper it must take clearly longer.
+	e := New(Params{BatteryWh: 60000, SoC: 0.80, TargetSoC: 1})
+
+	energy := e.Charge(50000, 14*time.Minute+24*time.Second)
+
+	if e.Full() {
+		t.Error("EV is full after 14.4 minutes, want the taper to slow it down")
+	}
+	if energy >= 12000 {
+		t.Errorf("energy = %.0f Wh, want less than 12000 Wh", energy)
+	}
+
+	total := energy + e.Charge(50000, 3*time.Hour)
+	if !e.Full() || !near(total, 12000, 1) {
+		t.Errorf("after 3 more hours: full = %v, total = %.0f Wh; want full with 12000 Wh", e.Full(), total)
+	}
+}
+
+func TestChargeGivesTheSameResultInOneStepOrMany(t *testing.T) {
+	one := New(Params{BatteryWh: 60000, SoC: 0.70, TargetSoC: 1})
+	many := New(Params{BatteryWh: 60000, SoC: 0.70, TargetSoC: 1})
+
+	a := one.Charge(50000, 20*time.Minute)
+	b := 0.0
+	for range 1200 {
+		b += many.Charge(50000, time.Second)
+	}
+
+	if !near(a, b, a*0.01) {
+		t.Errorf("one step gave %.0f Wh, many steps gave %.0f Wh; want them within 1%%", a, b)
+	}
+}
+
+func TestValidate(t *testing.T) {
+	if err := Defaults().Validate(); err != nil {
+		t.Errorf("Defaults are invalid: %v", err)
+	}
+	bad := []Params{
+		{BatteryWh: 0, SoC: 0.2, TargetSoC: 1},
+		{BatteryWh: 60000, SoC: 1.2, TargetSoC: 1},
+		{BatteryWh: 60000, SoC: 0.2, TargetSoC: 0},
+		{BatteryWh: 60000, SoC: 0.2, TargetSoC: 1, MaxPowerW: -1},
+	}
+	for _, p := range bad {
+		if p.Validate() == nil {
+			t.Errorf("%+v is accepted, want an error", p)
+		}
+	}
+}
+
+func TestParseEnergyAndPercent(t *testing.T) {
+	if got, err := ParseEnergy("60kWh"); err != nil || got != 60000 {
+		t.Errorf("ParseEnergy(60kWh) = %v, %v", got, err)
+	}
+	if got, err := ParseEnergy("500 Wh"); err != nil || got != 500 {
+		t.Errorf("ParseEnergy(500 Wh) = %v, %v", got, err)
+	}
+	if _, err := ParseEnergy("60"); err == nil {
+		t.Error("ParseEnergy(60) succeeded, want an error for the missing unit")
+	}
+	if got, err := ParsePercent("20%"); err != nil || got != 0.2 {
+		t.Errorf("ParsePercent(20%%) = %v, %v", got, err)
+	}
+	if got, err := ParsePercent("80"); err != nil || got != 0.8 {
+		t.Errorf("ParsePercent(80) = %v, %v", got, err)
+	}
+	if _, err := ParsePercent("120%"); err == nil {
+		t.Error("ParsePercent(120%) succeeded, want an error")
+	}
+}

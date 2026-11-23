@@ -77,6 +77,8 @@ type CSMS struct {
 	calls       []Call
 	connects    map[string]int
 	disconnects map[string][]Disconnect
+
+	lastTransactionID int
 }
 
 // Disconnect describes how one connection from a charger ended.
@@ -87,7 +89,9 @@ type Disconnect struct {
 }
 
 // Start runs a fake CSMS until the test ends. By default it accepts every
-// charger and answers BootNotification, Heartbeat and StatusNotification.
+// charger and every tag, numbers transactions from 1, and answers
+// BootNotification, Heartbeat, StatusNotification, Authorize,
+// StartTransaction, StopTransaction and MeterValues.
 func Start(t testing.TB, opts ...Option) *CSMS {
 	s := &CSMS{
 		interval:    300,
@@ -112,6 +116,26 @@ func Start(t testing.TB, opts ...Option) *CSMS {
 	})
 	s.Handle(v16.ActionStatusNotification, func(string, json.RawMessage) (any, *ocppj.CallError) {
 		return v16.StatusNotificationResponse{}, nil
+	})
+
+	s.Handle(v16.ActionAuthorize, func(string, json.RawMessage) (any, *ocppj.CallError) {
+		return v16.AuthorizeResponse{IDTagInfo: v16.IDTagInfo{Status: v16.AuthorizationAccepted}}, nil
+	})
+	s.Handle(v16.ActionStartTransaction, func(string, json.RawMessage) (any, *ocppj.CallError) {
+		s.mu.Lock()
+		s.lastTransactionID++
+		id := s.lastTransactionID
+		s.mu.Unlock()
+		return v16.StartTransactionResponse{
+			IDTagInfo:     v16.IDTagInfo{Status: v16.AuthorizationAccepted},
+			TransactionID: id,
+		}, nil
+	})
+	s.Handle(v16.ActionStopTransaction, func(string, json.RawMessage) (any, *ocppj.CallError) {
+		return v16.StopTransactionResponse{}, nil
+	})
+	s.Handle(v16.ActionMeterValues, func(string, json.RawMessage) (any, *ocppj.CallError) {
+		return v16.MeterValuesResponse{}, nil
 	})
 
 	s.srv = httptest.NewServer(http.HandlerFunc(s.serve))

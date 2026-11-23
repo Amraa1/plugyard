@@ -27,6 +27,10 @@ type UsageError struct{ Err error }
 func (e *UsageError) Error() string { return e.Err.Error() }
 func (e *UsageError) Unwrap() error { return e.Err }
 
+// errFailed makes Run exit with ExitFailure without printing anything more.
+// A command returns it after it has already reported what went wrong.
+var errFailed = errors.New("failed")
+
 // Run executes plugyard with the given arguments (without the program name)
 // and returns the process exit code. Ctrl+C or a termination signal asks the
 // running command to shut down in an orderly way.
@@ -52,6 +56,10 @@ func RunContext(ctx context.Context, args []string, stdout, stderr io.Writer) in
 	err := root.ExecuteContext(ctx)
 	if err == nil {
 		return ExitOK
+	}
+
+	if errors.Is(err, errFailed) {
+		return ExitFailure
 	}
 
 	fmt.Fprintf(stderr, "plugyard: %v\n", err)
@@ -93,6 +101,6 @@ func newRoot() *cobra.Command {
 	}
 	root.CompletionOptions.DisableDefaultCmd = true
 
-	root.AddCommand(newRun(), newVersion())
+	root.AddCommand(newExec(), newPs(), newRun(), newVersion())
 	return root
 }

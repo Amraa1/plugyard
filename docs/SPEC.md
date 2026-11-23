@@ -70,8 +70,10 @@ Rules that apply to every command:
 - A charger argument accepts a glob pattern (`'FAST-*'`, `'*'`) and then acts on every match.
 - Charger commands see chargers from all running sites. `-s, --site <name>` narrows to one site.
 - The same charge point ID may exist in two running sites. A command whose charger argument is ambiguous fails and asks for `-s`.
-- `--format json` is available on `ps`, `site ls`, `inspect`, `stats` and `logs` (one JSON object per line for `logs`).
+- `--format json` is available on `ps`, `site ls`, `inspect`, `stats`, `logs` and `exec`. It prints one JSON object per line, as Docker does.
+- Output is colored when it goes to a terminal: green for `ok`, `online` and `Charging`; yellow for `connecting`, `Preparing`, `Finishing` and the suspended statuses; red for `failed`, `offline` and `Faulted`. Color is never the only signal, and it is switched off when output is piped or redirected or when the `NO_COLOR` environment variable is set.
 - Exit codes: `0` success, `1` runtime failure, `2` usage or validation error.
+- Starting a site whose name is already running fails with exit code `1`. This includes a second `plugyard run` with the same charge point ID.
 
 ### Site commands
 
@@ -90,7 +92,7 @@ Site commands act on the `site.yaml` in the current directory unless `-f, --file
 
 | Command | Effect |
 |---|---|
-| `plugyard ps [-a]` | List running chargers with site, connection state and connector status; `-a` includes stopped ones. |
+| `plugyard ps [-a]` | List running chargers with site, connection state (`connecting`, `online` or `offline`) and the status of each connector; `-a` includes stopped ones. |
 | `plugyard logs <charger> [-f] [--events] [--since <duration>]` | Show events and OCPP messages. |
 | `plugyard stats` | Live table of power, energy delivered and message counts per charger. |
 | `plugyard inspect <charger>` | Full state: model, configuration keys, charging profiles, connectors, transaction. |
@@ -101,7 +103,7 @@ Site commands act on the `site.yaml` in the current directory unless `-f, --file
 | `plugyard rm [-f] <charger>` | Wipe the charger's saved state. Refuses a running charger unless `-f`, which stops it first. The charger is recreated fresh on the next `site up` if the site file still declares it. |
 | `plugyard run <Chargerfile> --csms <url> --id <charge point ID>` | Start one charger without a site file, in an implicit site named after the ID. |
 
-`run` stays in the foreground printing the charger's log until interrupted, then shuts the charger down in an orderly way. It also accepts `--password <password>` for HTTP Basic Auth, which falls back to the `PLUGYARD_CSMS_PASSWORD` environment variable so the password can stay off the command line, and `--insecure-skip-verify`.
+`run` stays in the foreground printing the charger's log until interrupted, then shuts the charger down in an orderly way. It also accepts `--speed N`, with the same meaning as on `site up`, `--password <password>` for HTTP Basic Auth, which falls back to the `PLUGYARD_CSMS_PASSWORD` environment variable so the password can stay off the command line, and `--insecure-skip-verify`.
 
 ### Actions
 
@@ -123,6 +125,10 @@ plugyard exec <charger> <action> [arguments] [-n, --connector <number>]
 - `--connector` defaults to 1 for `plug`, `unplug` and `tap`.
 - Giving `--connector` to a whole-charger action (`offline`, `online`, `reboot`) is an error.
 - `plugyard exec <charger> --help` lists the actions.
+- `exec` waits for the immediate outcome of the action and prints it, for example that a tag was accepted and a transaction started, or that the CSMS rejected the tag.
+- The exit code is `0` when the action was delivered, whatever the CSMS answered. A rejected tag is the CSMS's answer and not a failure. Exit code `1` means the action could not be carried out, for example because no charger matched or the connector already has an EV.
+- `exec` prints one line per matched charger, sorted by charge point ID: the ID, the connector, `ok` or `failed`, and the outcome or the reason. When the charger argument matched several chargers the action runs on every one of them, a summary line follows (`18 of 20 succeeded, 2 failed`), and the exit code is `1` if any failed. Chargers on which the action worked are not rolled back.
+- `exec` also accepts `--format json`.
 
 ### Other commands
 
@@ -203,7 +209,9 @@ chargers:
 
 Precedence: flags on `plug`, then the preset named by `--ev`, then the charger entry's default `ev`, then the built-in defaults.
 
-Charge curve: full available power up to 80% state of charge, then a linear taper to the target. Available power is the lowest of the connector maximum, the EV maximum and any active charging profile limit.
+Charge curve: full available power up to 80% state of charge, then falling linearly to 10% of available power at 100%. The curve depends on the state of charge and not on the target, so an EV with a target of 80% or less never tapers. Charging ends when the target is reached. Available power is the lowest of the connector maximum, the EV maximum and any active charging profile limit.
+
+There are no charging losses: the energy on the charger's meter equals the energy added to the battery.
 
 ## 8. Charger behavior
 
@@ -212,7 +220,7 @@ Charge curve: full available power up to 80% state of charge, then a linear tape
 | Trigger | Simulates | What the CSMS sees |
 |---|---|---|
 | `start` | Power on | `BootNotification`, then `StatusNotification` for each connector |
-| `stop` | Orderly shutdown | Active transactions end with `StopTransaction`, then the connection closes |
+| `stop` | Orderly shutdown | Active transactions end with `StopTransaction` (reason `Other`), then the connection closes |
 | `kill`, or the machine shutting down | Power cut | The connection drops with no message. On the next start the charger boots and sends `StopTransaction` with reason `PowerLoss` and the last saved meter reading |
 | `exec ... offline` | Network loss | The connection drops. Charging continues, and transaction messages are queued and replayed in order on `online` |
 
@@ -226,9 +234,21 @@ Charge curve: full available power up to 80% state of charge, then a linear tape
 ### Transactions
 
 - With `startOn: tap`, a transaction starts after plug-in and an accepted tag, in either order, and stops on a second tap of the same tag, on unplug, or on a remote stop.
-- With `startOn: plug`, a transaction starts on plug-in using `startTag`.
+- When a tag is accepted before an EV is plugged in, the connector reports `Preparing` and waits for the number of seconds in the `ConnectionTimeOut` configuration key (default 60). If no EV arrives it returns to `Available` and forgets the tag.
+- A different tag presented during a transaction is sent to the CSMS with `Authorize`. It stops the transaction only if it is accepted and has the same `parentIdTag` as the tag that started it; otherwise it is logged and ignored.
+- If the CSMS answers `StartTransaction` with a tag status other than `Accepted`, the charger stops the transaction at once with reason `DeAuthorized`. Setting the `StopTransactionOnInvalidId` configuration key to `false` turns this off.
+- With `startOn: plug`, a transaction starts on plug-in using `startTag`. A tap can still stop it, under the same rules, as can unplugging.
+- A tap on a connector that is `Finishing` is refused: the EV must be unplugged before a new transaction can start.
 - When the EV reaches its target, `onEvFull` decides between `StopTransaction` followed by `Finishing`, and `SuspendedEV` with the transaction left open.
+- `StopTransaction` reasons: `Local` for a tap, `EVDisconnected` for an unplug, `Remote` for a remote stop, `DeAuthorized` as above, and `Other` when the EV is full, since OCPP 1.6 has no reason for that.
 - When a charging profile limits a connector to zero during a transaction, the connector reports `SuspendedEVSE` and returns to `Charging` when the limit rises.
+
+### Metering
+
+- Each connector has a meter register in Wh that only counts up. It is not reset between transactions; `meterStart` and `meterStop` are readings of it.
+- During a transaction the charger sends `MeterValues` every `MeterValueSampleInterval` seconds (default 60) with the measurands listed in the `MeterValuesSampledData` configuration key.
+- Supported measurands: `Energy.Active.Import.Register` (Wh), `Power.Active.Import` (W) and `SoC` (Percent). The default is the first two. A model of a DC charger adds `SoC` in its Chargerfile `config`; an AC charger cannot know the state of charge.
+- `StopTransaction` carries `transactionData` with the measurands in the `StopTxnSampledData` key, sampled at the start and the end of the transaction. The default is `Energy.Active.Import.Register`. Setting the key to empty sends no `transactionData`.
 
 ### CSMS-initiated operations
 
@@ -240,10 +260,11 @@ Handled automatically with no user action: `RemoteStartTransaction`, `RemoteStop
 
 ## 9. Running and saved state
 
-- There is no daemon. The `site up` process owns its chargers. Other commands find that process and talk to it over a local socket.
+- There is no daemon. The `site up` process owns its chargers. Other commands find that process and talk to it over a local socket: a Unix domain socket file per running site, in the data directory (see ADR 0004).
 - A site does not start by itself after a reboot; run `plugyard site up -d` again.
 - State is stored in one SQLite database per site, in a per-user data directory: `%LOCALAPPDATA%\plugyard` on Windows, `~/.local/share/plugyard` on Linux, `~/Library/Application Support/plugyard` on macOS.
 - The database is accessed through a pure-Go SQLite driver so that all platforms build without a C compiler.
+- The `PLUGYARD_DATA_DIR` environment variable overrides the data directory. Socket paths are limited to about 100 characters, so a data directory with a very long path is refused with a message saying so.
 
 Saved per charger:
 

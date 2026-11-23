@@ -4,12 +4,14 @@ package charger
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math/rand/v2"
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Amraa1/plugyard/internal/model"
@@ -37,14 +39,19 @@ type Timing struct {
 	// attempts, which doubles after each failure.
 	ReconnectMin time.Duration
 	ReconnectMax time.Duration
+	// Tick is how often the EVs on the connectors are advanced.
+	Tick time.Duration
 }
 
 // Config describes one charger.
 type Config struct {
 	// ID is the charge point ID.
-	ID     string
-	Model  *model.Model
-	CSMS   CSMS
+	ID    string
+	Model *model.Model
+	CSMS  CSMS
+	// Speed multiplies the rate of EV charging and energy accumulation.
+	// Zero means 1. Protocol timers are not affected.
+	Speed  float64
 	Timing Timing
 	// Log, if set, receives the charger's events and OCPP messages. It is
 	// called from several goroutines and must not block.
@@ -77,12 +84,53 @@ const (
 	defaultReconnectMax      = 30 * time.Second
 	defaultHeartbeatInterval = 300 * time.Second
 	defaultBootRetryInterval = 30 * time.Second
+	defaultTick              = time.Second
 )
+
+// Connection states, as shown by "plugyard ps".
+const (
+	Connecting = "connecting"
+	Online     = "online"
+	Offline    = "offline"
+)
+
+// defaultConfig holds the OCPP configuration keys the charger acts on and
+// their values when the Chargerfile does not set them.
+var defaultConfig = map[string]string{
+	"HeartbeatInterval":          "300",
+	"ConnectionTimeOut":          "60",
+	"MeterValueSampleInterval":   "60",
+	"MeterValuesSampledData":     v16.MeasurandEnergy + "," + v16.MeasurandPower,
+	"StopTxnSampledData":         v16.MeasurandEnergy,
+	"StopTransactionOnInvalidId": "true",
+}
 
 // Charger is one simulated charger.
 type Charger struct {
-	cfg Config
-	url string
+	cfg    Config
+	url    string
+	config map[string]string // OCPP configuration keys
+
+	// wake tells the connection that the outbox has something to send.
+	wake chan struct{}
+
+	mu         sync.Mutex
+	connection string      // Connecting, Online or Offline
+	conn       *ocppj.Conn // set while the CSMS has accepted the charger
+	connectors []*connector
+	outbox     []*outMsg
+}
+
+// outMsg is a message waiting to be sent to the CSMS. Messages are sent one
+// at a time, in order, and stay queued while the charger is not connected.
+type outMsg struct {
+	action string
+	// build returns the payload. It runs just before sending, so that it can
+	// use values learned from earlier answers, such as a transaction ID.
+	build func() any
+	// done, if set, is given the answer, or nil if the CSMS answered with an
+	// error.
+	done func(result json.RawMessage)
 }
 
 // New checks cfg and returns a charger that has not been powered on yet.
@@ -105,6 +153,13 @@ func New(cfg Config) (*Charger, error) {
 		return nil, fmt.Errorf("invalid CSMS URL %q: it has no host", cfg.CSMS.URL)
 	}
 
+	if cfg.Speed < 0 {
+		return nil, errors.New("the speed cannot be negative")
+	}
+	if cfg.Speed == 0 {
+		cfg.Speed = 1
+	}
+
 	if cfg.Timing.CallTimeout <= 0 {
 		cfg.Timing.CallTimeout = defaultCallTimeout
 	}
@@ -114,12 +169,35 @@ func New(cfg Config) (*Charger, error) {
 	if cfg.Timing.ReconnectMax < cfg.Timing.ReconnectMin {
 		cfg.Timing.ReconnectMax = max(defaultReconnectMax, cfg.Timing.ReconnectMin)
 	}
+	if cfg.Timing.Tick <= 0 {
+		cfg.Timing.Tick = defaultTick
+	}
 
-	return &Charger{
-		cfg: cfg,
-		url: u.JoinPath(url.PathEscape(cfg.ID)).String(),
-	}, nil
+	c := &Charger{
+		cfg:        cfg,
+		url:        u.JoinPath(url.PathEscape(cfg.ID)).String(),
+		config:     map[string]string{},
+		wake:       make(chan struct{}, 1),
+		connection: Connecting,
+	}
+	for key, value := range defaultConfig {
+		c.config[key] = value
+	}
+	for key, value := range cfg.Model.Config {
+		c.config[key] = value
+	}
+	for _, mc := range cfg.Model.Connectors {
+		c.connectors = append(c.connectors, &connector{
+			id:       mc.ID,
+			maxPower: float64(mc.MaxPower),
+			status:   v16.StatusAvailable,
+		})
+	}
+	return c, nil
 }
+
+// ID returns the charge point ID.
+func (c *Charger) ID() string { return c.cfg.ID }
 
 // URL returns the full address the charger connects to: the CSMS URL with
 // the charge point ID appended.
@@ -131,6 +209,15 @@ func (c *Charger) URL() string { return c.url }
 func (c *Charger) Run(ctx context.Context) error {
 	c.event("powered on")
 	wait := c.cfg.Timing.ReconnectMin
+
+	// The EVs keep charging whether or not the CSMS is reachable.
+	var simulation sync.WaitGroup
+	simulation.Add(1)
+	go func() {
+		defer simulation.Done()
+		c.simulate(ctx)
+	}()
+	defer simulation.Wait()
 
 	for {
 		connected, err := c.session(ctx)
@@ -144,6 +231,10 @@ func (c *Charger) Run(ctx context.Context) error {
 		} else {
 			c.event("could not connect: %v", err)
 		}
+
+		c.mu.Lock()
+		c.connection = Offline
+		c.mu.Unlock()
 
 		// A little randomness keeps many chargers from reconnecting in step.
 		pause := wait + time.Duration(rand.Int64N(int64(wait)/4+1))
@@ -192,32 +283,91 @@ func (c *Charger) session(ctx context.Context) (connected bool, err error) {
 		return true, err
 	}
 
-	for _, connector := range c.cfg.Model.Connectors {
-		now := v16.Time{Time: time.Now()}
-		err := c.call(ctx, conn, v16.ActionStatusNotification, v16.StatusNotificationRequest{
-			ConnectorID: connector.ID,
-			ErrorCode:   v16.ErrorCodeNoError,
-			Status:      v16.StatusAvailable,
-			Timestamp:   &now,
-		}, nil)
-		if err != nil {
-			return true, err
-		}
+	// From here on the charger is online: report where every connector
+	// stands, after anything that was queued while it was away.
+	c.mu.Lock()
+	c.conn = conn
+	c.connection = Online
+	for _, k := range c.connectors {
+		c.enqueueStatus(k)
 	}
+	c.mu.Unlock()
+	defer func() {
+		c.mu.Lock()
+		c.conn = nil
+		c.connection = Offline
+		c.mu.Unlock()
+	}()
 
 	ticker := time.NewTicker(heartbeat)
 	defer ticker.Stop()
 	for {
+		if err := c.drain(conn); err != nil {
+			return true, err
+		}
 		select {
 		case <-ctx.Done():
+			// Orderly shutdown: end the transactions and tell the CSMS
+			// before leaving.
+			c.mu.Lock()
+			for _, k := range c.connectors {
+				if k.tx != nil {
+					c.stopTx(k, v16.ReasonOther, k.tx.idTag)
+					c.reportStatus(k)
+				}
+			}
+			c.mu.Unlock()
+			_ = c.drain(conn)
 			return true, ctx.Err()
 		case <-conn.Done():
 			return true, conn.Err()
+		case <-c.wake:
 		case <-ticker.C:
-			if err := c.call(ctx, conn, v16.ActionHeartbeat, v16.HeartbeatRequest{}, nil); err != nil {
+			if err := c.call(context.Background(), conn, v16.ActionHeartbeat, v16.HeartbeatRequest{}, nil); err != nil {
 				return true, err
 			}
 		}
+	}
+}
+
+// drain sends the queued messages in order. A message leaves the queue only
+// once the CSMS has answered it, so nothing is lost if the connection drops.
+func (c *Charger) drain(conn *ocppj.Conn) error {
+	for {
+		c.mu.Lock()
+		if len(c.outbox) == 0 {
+			c.mu.Unlock()
+			return nil
+		}
+		m := c.outbox[0]
+		c.mu.Unlock()
+
+		var result json.RawMessage
+		err := c.call(context.Background(), conn, m.action, m.build(), &result)
+		var callErr *ocppj.CallError
+		switch {
+		case errors.As(err, &callErr):
+			c.event("the CSMS answered %s with an error: %v", m.action, callErr)
+			result = nil
+		case err != nil:
+			return err
+		}
+
+		c.mu.Lock()
+		c.outbox = c.outbox[1:]
+		c.mu.Unlock()
+		if m.done != nil {
+			m.done(result)
+		}
+	}
+}
+
+// enqueue adds a message to the outbox. The caller holds c.mu.
+func (c *Charger) enqueue(m *outMsg) {
+	c.outbox = append(c.outbox, m)
+	select {
+	case c.wake <- struct{}{}:
+	default:
 	}
 }
 
@@ -264,11 +414,33 @@ func (c *Charger) boot(ctx context.Context, conn *ocppj.Conn) (time.Duration, er
 }
 
 func (c *Charger) configuredHeartbeatInterval() time.Duration {
-	seconds, err := strconv.Atoi(c.cfg.Model.Config["HeartbeatInterval"])
+	if interval := c.configSeconds("HeartbeatInterval"); interval > 0 {
+		return interval
+	}
+	return defaultHeartbeatInterval
+}
+
+// configSeconds reads a configuration key holding a number of seconds. It
+// returns zero when the key is missing, not a number, or not positive.
+func (c *Charger) configSeconds(key string) time.Duration {
+	seconds, err := strconv.Atoi(strings.TrimSpace(c.config[key]))
 	if err != nil || seconds <= 0 {
-		return defaultHeartbeatInterval
+		return 0
 	}
 	return time.Duration(seconds) * time.Second
+}
+
+// configMeasurands reads a configuration key holding a comma-separated list
+// of measurands, keeping the ones the charger can report.
+func (c *Charger) configMeasurands(key string) []string {
+	var out []string
+	for _, name := range strings.Split(c.config[key], ",") {
+		switch name = strings.TrimSpace(name); name {
+		case v16.MeasurandEnergy, v16.MeasurandPower, v16.MeasurandSoC:
+			out = append(out, name)
+		}
+	}
+	return out
 }
 
 func (c *Charger) call(ctx context.Context, conn *ocppj.Conn, action string, req, resp any) error {

@@ -50,6 +50,7 @@ func (b *syncBuffer) String() string {
 }
 
 func TestRunBringsAChargerOnlineUntilInterrupted(t *testing.T) {
+	useTempDataDir(t)
 	csms := csmstest.Start(t)
 	path := writeChargerfile(t, testChargerfile)
 
