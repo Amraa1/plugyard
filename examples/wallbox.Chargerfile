@@ -1,0 +1,6 @@
+# A 7.4 kW AC wallbox with one connector.
+vendor: Acme
+model: HomeBox 7
+firmware: 2.0.1
+connectors:
+  - { id: 1, type: Type2, maxPower: 7.4kW }

@@ -91,6 +91,38 @@ func (c *Client) Exec(ctx context.Context, req ExecRequest) ([]ExecResult, error
 	return results, err
 }
 
+// Shutdown asks the site to shut down in an orderly way and waits until its
+// process has stopped answering.
+func (c *Client) Shutdown(ctx context.Context) error {
+	var ignored struct{}
+	if err := c.do(ctx, http.MethodPost, "/v1/shutdown", struct{}{}, &ignored); err != nil {
+		return err
+	}
+	for {
+		c.http.CloseIdleConnections()
+		probeCtx, cancel := context.WithTimeout(ctx, probeTimeout)
+		err := c.do(probeCtx, http.MethodGet, "/v1/info", nil, &Info{})
+		cancel()
+		if err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			return nil
+		}
+		select {
+		case <-time.After(50 * time.Millisecond):
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+}
+
+// Probe returns a client for the site with the given name if it is running
+// under dataDir.
+func Probe(ctx context.Context, dataDir, siteName string) (*Client, error) {
+	return probe(ctx, SocketPath(dataDir, siteName))
+}
+
 // Close releases the client's connection.
 func (c *Client) Close() { c.http.CloseIdleConnections() }
 

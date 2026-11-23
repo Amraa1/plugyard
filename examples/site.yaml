@@ -1,0 +1,28 @@
+# A site with 20 fast chargers and one wallbox.
+#
+#   plugyard site validate -f examples/site.yaml    check it and list the chargers
+#   plugyard site up -f examples/site.yaml          start them (add -d for the background)
+#   plugyard ps                                     from a second terminal
+#   plugyard site down -f examples/site.yaml        shut them down
+name: demo
+
+csms:
+  # The charge point ID is appended: FAST-001 connects to .../ocpp/FAST-001.
+  # ${CSMS_URL:-...} uses the CSMS_URL environment variable when it is set.
+  url: ${CSMS_URL:-ws://localhost:9000/ocpp}
+
+# EV presets, for "plugyard exec <charger> plug --ev <name>".
+evs:
+  compact:   { battery: 40kWh, maxPower: 50kW }
+  longrange: { battery: 82kWh, maxPower: 230kW, soc: 10%, targetSoc: 80%, curve: dc-fast }
+
+chargers:
+  fast:
+    model: ./Chargerfile
+    count: 20
+    id: "FAST-{n:03}"     # FAST-001 to FAST-020
+    ev: longrange         # the EV plugged in when a plug names none
+  lobby:
+    model: ./wallbox.Chargerfile
+    id: "LOBBY-1"
+    config: { MeterValueSampleInterval: 10 }

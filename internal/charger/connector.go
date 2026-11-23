@@ -90,7 +90,10 @@ func (c *Charger) Snapshot() Snapshot {
 	defer c.mu.Unlock()
 
 	s := Snapshot{ChargePointID: c.cfg.ID, Connection: c.connection}
+	now := time.Now()
 	for _, k := range c.connectors {
+		// Bring the reading up to this moment, not the last tick.
+		c.advance(k, now)
 		ks := ConnectorSnapshot{
 			ID:      k.id,
 			Status:  k.status,

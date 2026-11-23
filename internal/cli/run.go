@@ -9,7 +9,6 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/Amraa1/plugyard/internal/charger"
-	"github.com/Amraa1/plugyard/internal/control"
 	"github.com/Amraa1/plugyard/internal/datadir"
 	"github.com/Amraa1/plugyard/internal/model"
 	"github.com/Amraa1/plugyard/internal/site"
@@ -69,13 +68,9 @@ func newRun() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			server, err := control.Serve(dir, site.New(id, c))
-			if err != nil {
-				return err
-			}
-			defer server.Close()
-
-			return c.Run(cmd.Context())
+			s := site.New(id, c)
+			s.SetCSMS([]string{csmsURL})
+			return serveSite(cmd.Context(), dir, s)
 		},
 	}
 
@@ -96,8 +91,12 @@ func newRun() *cobra.Command {
 //	2026-01-02T15:04:05.000+01:00 CP-1 | connected to ws://...
 //	2026-01-02T15:04:05.010+01:00 CP-1 > [2,"...","BootNotification",{...}]
 //	2026-01-02T15:04:05.020+01:00 CP-1 < [3,"...",{...}]
+//
+// On a terminal each charge point ID gets a color of its own, so that the
+// interleaved logs of many chargers can be told apart.
 func newLogPrinter(w io.Writer) func(charger.Entry) {
 	var mu sync.Mutex
+	p := newPalette(w)
 	return func(e charger.Entry) {
 		marker := "|"
 		switch e.Kind {
@@ -108,6 +107,6 @@ func newLogPrinter(w io.Writer) func(charger.Entry) {
 		}
 		mu.Lock()
 		defer mu.Unlock()
-		fmt.Fprintf(w, "%s %s %s %s\n", e.Time.Format("2006-01-02T15:04:05.000Z07:00"), e.ChargePointID, marker, e.Text)
+		fmt.Fprintf(w, "%s %s %s %s\n", e.Time.Format("2006-01-02T15:04:05.000Z07:00"), p.id(e.ChargePointID), marker, e.Text)
 	}
 }

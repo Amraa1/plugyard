@@ -10,11 +10,12 @@ import (
 	"path/filepath"
 
 	"github.com/Amraa1/plugyard/internal/charger"
+	"github.com/Amraa1/plugyard/internal/ev"
 )
 
 // ProtocolVersion changes whenever requests or answers change shape. A
 // command only talks to a site that speaks the same version.
-const ProtocolVersion = 1
+const ProtocolVersion = 2
 
 const (
 	socketPrefix = "s-"
@@ -35,6 +36,10 @@ type Info struct {
 	Protocol int    `json:"protocol"`
 	Site     string `json:"site"`
 	PID      int    `json:"pid"`
+	// Chargers is the number of chargers in the site.
+	Chargers int `json:"chargers"`
+	// CSMS lists the distinct CSMS URLs the site connects to.
+	CSMS []string `json:"csms"`
 }
 
 // ChargerState is a charger's state together with the site it runs in.
@@ -57,17 +62,11 @@ type ExecRequest struct {
 	Connector      int      `json:"connector"`
 	// Tag is the tag presented by a tap.
 	Tag string `json:"tag,omitempty"`
-	// EV holds the EV parameters given with a plug; unset ones take their
-	// defaults.
-	EV EVParams `json:"ev"`
-}
-
-// EVParams are optional EV parameters. A nil field was not given.
-type EVParams struct {
-	BatteryWh *float64 `json:"batteryWh,omitempty"`
-	SoC       *float64 `json:"soc,omitempty"`
-	MaxPowerW *float64 `json:"maxPowerW,omitempty"`
-	TargetSoC *float64 `json:"targetSoc,omitempty"`
+	// EVPreset names an EV preset of the site to plug in.
+	EVPreset string `json:"evPreset,omitempty"`
+	// EV holds the EV parameters given with a plug. They take precedence
+	// over the preset.
+	EV ev.Overrides `json:"ev"`
 }
 
 // ExecResult says what an action did on one charger.

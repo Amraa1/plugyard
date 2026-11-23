@@ -42,6 +42,22 @@ func (p palette) yellow(s string) string { return p.wrap("33", s) }
 func (p palette) red(s string) string    { return p.wrap("31", s) }
 func (p palette) bold(s string) string   { return p.wrap("1", s) }
 
+// idColors are the colors charge point IDs are given in logs. Red is left
+// out, since it means failure everywhere else.
+var idColors = []string{"36", "35", "34", "33", "32", "96", "95", "94", "93", "92"}
+
+// id colors a charge point ID. The same ID always gets the same color.
+func (p palette) id(id string) string {
+	if !p.on {
+		return id
+	}
+	sum := uint32(2166136261)
+	for i := 0; i < len(id); i++ {
+		sum = (sum ^ uint32(id[i])) * 16777619
+	}
+	return p.wrap(idColors[sum%uint32(len(idColors))], id)
+}
+
 // connection colors a connection state.
 func (p palette) connection(state string) string {
 	switch state {
