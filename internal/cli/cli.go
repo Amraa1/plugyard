@@ -2,9 +2,13 @@
 package cli
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
+	"os"
+	"os/signal"
+	"syscall"
 
 	"github.com/spf13/cobra"
 )
@@ -24,8 +28,17 @@ func (e *UsageError) Error() string { return e.Err.Error() }
 func (e *UsageError) Unwrap() error { return e.Err }
 
 // Run executes plugyard with the given arguments (without the program name)
-// and returns the process exit code.
+// and returns the process exit code. Ctrl+C or a termination signal asks the
+// running command to shut down in an orderly way.
 func Run(args []string, stdout, stderr io.Writer) int {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	return RunContext(ctx, args, stdout, stderr)
+}
+
+// RunContext is Run with a caller-supplied context; cancelling it asks the
+// running command to shut down.
+func RunContext(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	// started becomes true once cobra has accepted the command, flags and
 	// arguments. An error before that point is a usage error.
 	started := false
@@ -34,9 +47,9 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	root.SetArgs(args)
 	root.SetOut(stdout)
 	root.SetErr(stderr)
-	root.PersistentPreRun = func(*cobra.Command, []string) { started = true }
+	markStarted(root, &started)
 
-	err := root.Execute()
+	err := root.ExecuteContext(ctx)
 	if err == nil {
 		return ExitOK
 	}
@@ -49,6 +62,20 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return ExitUsage
 	}
 	return ExitFailure
+}
+
+// markStarted wraps the run function of cmd and of every command below it so
+// that *started is set once cobra has finished its own checks.
+func markStarted(cmd *cobra.Command, started *bool) {
+	if run := cmd.RunE; run != nil {
+		cmd.RunE = func(c *cobra.Command, args []string) error {
+			*started = true
+			return run(c, args)
+		}
+	}
+	for _, sub := range cmd.Commands() {
+		markStarted(sub, started)
+	}
 }
 
 func newRoot() *cobra.Command {
@@ -66,6 +93,6 @@ func newRoot() *cobra.Command {
 	}
 	root.CompletionOptions.DisableDefaultCmd = true
 
-	root.AddCommand(newVersion())
+	root.AddCommand(newRun(), newVersion())
 	return root
 }

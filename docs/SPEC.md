@@ -1,6 +1,6 @@
 # plugyard V1 specification
 
-Status: agreed and reviewed design, not yet implemented.
+Status: agreed and reviewed design, partly implemented. Progress is tracked in the milestone issues.
 Terms in **bold** on first use are defined in [CONTEXT.md](../CONTEXT.md).
 
 ## 1. Purpose
@@ -100,6 +100,8 @@ Site commands act on the `site.yaml` in the current directory unless `-f, --file
 | `plugyard kill <charger>` | Power cut. |
 | `plugyard rm [-f] <charger>` | Wipe the charger's saved state. Refuses a running charger unless `-f`, which stops it first. The charger is recreated fresh on the next `site up` if the site file still declares it. |
 | `plugyard run <Chargerfile> --csms <url> --id <charge point ID>` | Start one charger without a site file, in an implicit site named after the ID. |
+
+`run` stays in the foreground printing the charger's log until interrupted, then shuts the charger down in an orderly way. It also accepts `--password <password>` for HTTP Basic Auth, which falls back to the `PLUGYARD_CSMS_PASSWORD` environment variable so the password can stay off the command line, and `--insecure-skip-verify`.
 
 ### Actions
 
@@ -214,6 +216,13 @@ Charge curve: full available power up to 80% state of charge, then a linear tape
 | `kill`, or the machine shutting down | Power cut | The connection drops with no message. On the next start the charger boots and sends `StopTransaction` with reason `PowerLoss` and the last saved meter reading |
 | `exec ... offline` | Network loss | The connection drops. Charging continues, and transaction messages are queued and replayed in order on `online` |
 
+### Connection
+
+- The charger asks for the `ocpp1.6` WebSocket subprotocol. If the CSMS does not select it, the charger logs a warning and carries on.
+- If the CSMS answers `BootNotification` with `Pending` or `Rejected`, the charger sends nothing else and repeats `BootNotification` after the interval the CSMS gave.
+- The heartbeat interval is the one in the `BootNotification` answer, or the `HeartbeatInterval` configuration key when the answer gives none.
+- When the connection is lost or cannot be made, the charger keeps retrying, waiting 1 second at first and doubling up to 30 seconds, and boots again once connected.
+
 ### Transactions
 
 - With `startOn: tap`, a transaction starts after plug-in and an accepted tag, in either order, and stops on a second tap of the same tag, on unplug, or on a remote stop.
@@ -282,6 +291,7 @@ steps:
 ## 11. Logs
 
 - Two kinds of timestamped line per charger: events (connected, transaction started, fault) and raw OCPP messages in each direction.
+- Each line is a timestamp, the charge point ID, a marker and the text. The marker is `|` for an event, `>` for a message sent to the CSMS and `<` for a message received from it.
 - `logs` shows both; `--events` shows only events; `-f` follows; `--since 10m` limits the range.
 - Logs are written to rotating, size-capped plain files beside the site's database. They are not stored in the database.
 
