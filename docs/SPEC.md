@@ -58,6 +58,7 @@ One site must run hundreds to a few thousand chargers comfortably on a developer
 | **Site** | A named group of chargers declared in a site file and started together |
 | **EV** | The simulated vehicle on a connector; four parameters that exist only while plugged in |
 | **EV preset** | A named set of EV parameters in a site file |
+| **Charge curve** | The share of its maximum power an EV accepts at each state of charge |
 | **Scenario** | A file of timed actions run against a running site |
 
 Every charger belongs to a site. A charger started with `plugyard run` belongs to an implicit site named after its charge point ID.
@@ -81,12 +82,18 @@ Site commands act on the `site.yaml` in the current directory unless `-f, --file
 
 | Command | Effect |
 |---|---|
-| `plugyard site up [-d] [--speed N]` | Create the site's chargers from the site file, reusing saved state, and start them. Runs in the foreground showing logs; `-d` detaches. |
+| `plugyard site up [-d] [--speed N] [--connect-rate N]` | Create the site's chargers from the site file, reusing saved state, and start them. Runs in the foreground showing the log of every charger, as `docker compose up` does; `-d` runs it in the background. |
 | `plugyard site stop` | Power off all chargers. They stay listed in `ps -a`. State is kept. |
 | `plugyard site start` | Power on the chargers of a stopped site. |
 | `plugyard site down [--reset]` | Stop and remove the chargers from the listing. Saved state is kept unless `--reset` is given, which wipes it. |
 | `plugyard site ls [-a]` | List running sites; `-a` includes stopped sites and sites that only have saved state. |
-| `plugyard site validate` | Check the site file and the Chargerfiles it references without starting anything. |
+| `plugyard site validate` | Check the site file and the Chargerfiles it references without starting anything, and list the chargers it would create with their charge point IDs. |
+
+- `site up -d` starts a background copy of plugyard, waits until it reports the site running, and returns (see ADR 0005). The background process writes its log to a file in the data directory. It keeps running after the terminal closes, and ends when the user signs out.
+- `site down` shuts a site down in an orderly way: transactions end with `StopTransaction`, then connections close. It works on a site in the foreground of another terminal as well as one in the background.
+- Every charger connects at once by default. `--connect-rate N`, or `connectRate:` in the site file, limits new connections to N per second; `0` means no limit.
+- On Linux and macOS each connection uses one of the process's open files. `site up` raises that limit itself where the system allows, and otherwise stops with a message giving the `ulimit -n` value needed.
+- In the foreground log, each charge point ID has its own color on a terminal.
 
 ### Charger commands
 
@@ -113,7 +120,7 @@ plugyard exec <charger> <action> [arguments] [-n, --connector <number>]
 
 | Action | Arguments | Effect |
 |---|---|---|
-| `plug` | `--ev <preset>`, `--battery`, `--soc`, `--max-power`, `--target-soc` | Plug an EV into the connector |
+| `plug` | `--ev <preset>`, `--battery`, `--soc`, `--max-power`, `--target-soc`, `--curve <name>` | Plug an EV into the connector |
 | `unplug` | | Remove the EV |
 | `tap` | `<idTag>` | Present an RFID tag: `Authorize`, then start or stop the transaction |
 | `fault` | `<errorCode>` | Report a fault with `StatusNotification` |
@@ -177,9 +184,10 @@ csms:
   password: ${CSMS_PASSWORD}
   insecureSkipVerify: false
 speed: 1
+connectRate: 0                         # new connections per second; 0 = no limit
 evs:
   compact:   { battery: 40kWh, maxPower: 50kW }
-  longrange: { battery: 82kWh, maxPower: 170kW, soc: 10% }
+  longrange: { battery: 82kWh, maxPower: 230kW, soc: 10%, targetSoc: 80%, curve: dc-fast }
 chargers:
   fast:
     model: ./fast.Chargerfile
@@ -193,25 +201,76 @@ chargers:
 ```
 
 - `name` identifies the site and must be unique per user.
-- `csms` applies to the whole site; a charger entry may override it.
-- `${VAR}` is replaced from the environment, so secrets stay out of the file.
-- Each entry under `chargers` instantiates a model `count` times (default 1) using the `id` pattern, with optional `config` overrides and a default `ev`.
+- `csms` applies to the whole site; a charger entry may override any part of it.
+- Each entry under `chargers` instantiates a model `count` times (default 1), with optional `config` overrides and a default `ev`.
 - Entry names (`fast`, `lobby`) are used only inside the file. Everywhere else a charger is known by its charge point ID.
+- A Chargerfile path is relative to the site file.
+- Unknown settings are errors, and `site validate` reports every problem at once.
+
+### Charge point IDs
+
+An entry gets its charge point IDs from an **ID template** or from a list.
+
+| Setting | Meaning |
+|---|---|
+| `id: "FAST-{n}"` | `{n}` is the charger's number, counting from 1: `FAST-1`, `FAST-2`, ... |
+| `id: "FAST-{n:03}"` | `{n:03}` pads the number with zeros to three digits: `FAST-001` |
+| `start: 202310090165` | Count from this number instead of 1, for IDs that look like serial numbers |
+| `ids: [12994897, p025b2036387]` | An explicit list, for IDs that follow no pattern. Replaces `id`, `count` and `start` |
+
+- An entry with `count` above 1 must have `{n}` in its template.
+- The same charge point ID twice in one site file is an error.
+
+### Environment variables
+
+| Form | Meaning |
+|---|---|
+| `${VAR}` | The value of the environment variable. It is an error if the variable is not set, so that a missing password or URL is caught at once and named |
+| `${VAR:-fallback}` | The value of the variable, or `fallback` when it is not set or empty |
+| `$$` | A literal dollar sign |
 
 ## 7. EV model
 
-| Parameter | Flag | Built-in default |
-|---|---|---|
-| Battery capacity | `--battery` | 60 kWh |
-| Starting state of charge | `--soc` | 20% |
-| Maximum power accepted | `--max-power` | no limit; the connector's maximum applies |
-| Target state of charge | `--target-soc` | 100% |
+| Parameter | Flag | In a preset | Built-in default |
+|---|---|---|---|
+| Battery capacity | `--battery` | `battery` | 60 kWh |
+| Starting state of charge | `--soc` | `soc` | 20% |
+| Maximum power accepted | `--max-power` | `maxPower` | none; the connector's maximum applies |
+| Target state of charge | `--target-soc` | `targetSoc` | 100% |
+| Charge curve | `--curve` | `curve` | `standard` |
 
-Precedence: flags on `plug`, then the preset named by `--ev`, then the charger entry's default `ev`, then the built-in defaults.
+Precedence: flags on `plug`, then the preset named by `--ev`, then the charger entry's default `ev`, then the built-in defaults. Each level replaces only the parameters it gives.
 
-Charge curve: full available power up to 80% state of charge, then falling linearly to 10% of available power at 100%. The curve depends on the state of charge and not on the target, so an EV with a target of 80% or less never tapers. Charging ends when the target is reached. Available power is the lowest of the connector maximum, the EV maximum and any active charging profile limit.
+### Charge curve
 
-There are no charging losses: the energy on the charger's meter equals the energy added to the battery.
+A charge curve says what share of its maximum power the EV accepts at each state of charge. It is a list of points joined by straight lines.
+
+- The curve belongs to the EV. Delivered power is the lowest of the connector's maximum, the EV's maximum times the curve, and any active charging profile limit. An EV with no maximum of its own takes the connector's maximum as its own.
+- A fast-charging EV on a slower connector therefore charges at the connector's full power for as long as its curve stays above that, as real ones do.
+- Charging ends when the target is reached.
+- There are no charging losses: the energy on the charger's meter equals the energy added to the battery.
+
+Built-in curves:
+
+| Name | Shape |
+|---|---|
+| `standard` | 100% up to 80% state of charge, then falling to 10% at 100%. The default |
+| `dc-fast` | 30% at 0%, rising to 100% at 10%, held to 50%, falling to 28% at 80% and 7% at 100% |
+
+An EV preset names a built-in curve or gives its own points as pairs of state of charge and power share:
+
+```yaml
+evs:
+  mycar:
+    maxPower: 150kW
+    curve:
+      - [0%, 50%]
+      - [20%, 100%]
+      - [60%, 100%]
+      - [100%, 10%]
+```
+
+A curve must start at 0% and end at 100% state of charge, and its power share must stay above 0%, so that an EV can always reach its target. `plug --curve` accepts the names of built-in curves only.
 
 ## 8. Charger behavior
 
@@ -262,6 +321,7 @@ Handled automatically with no user action: `RemoteStartTransaction`, `RemoteStop
 
 - There is no daemon. The `site up` process owns its chargers. Other commands find that process and talk to it over a local socket: a Unix domain socket file per running site, in the data directory (see ADR 0004).
 - A site does not start by itself after a reboot; run `plugyard site up -d` again.
+- `site stop`, `site start` and `site ls -a` depend on saved state: a stopped site has no process, so its chargers exist only on disk.
 - State is stored in one SQLite database per site, in a per-user data directory: `%LOCALAPPDATA%\plugyard` on Windows, `~/.local/share/plugyard` on Linux, `~/Library/Application Support/plugyard` on macOS.
 - The database is accessed through a pure-Go SQLite driver so that all platforms build without a C compiler.
 - The `PLUGYARD_DATA_DIR` environment variable overrides the data directory. Socket paths are limited to about 100 characters, so a data directory with a very long path is refused with a message saying so.

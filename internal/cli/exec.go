@@ -24,6 +24,8 @@ func newExec() *cobra.Command {
 		soc       string
 		maxPower  string
 		targetSoC string
+		curve     string
+		preset    string
 	)
 
 	cmd := &cobra.Command{
@@ -53,7 +55,7 @@ func newExec() *cobra.Command {
 			}
 
 			req := control.ExecRequest{Action: action, Connector: connector}
-			evFlagsGiven := battery != "" || soc != "" || maxPower != "" || targetSoC != ""
+			evFlagsGiven := battery != "" || soc != "" || maxPower != "" || targetSoC != "" || curve != "" || preset != ""
 
 			wantArgs := func(n int, what string) error {
 				if len(rest) != n {
@@ -67,11 +69,12 @@ func newExec() *cobra.Command {
 				if err := wantArgs(0, "no arguments"); err != nil {
 					return err
 				}
-				params, err := parseEVFlags(battery, soc, maxPower, targetSoC)
+				params, err := parseEVFlags(battery, soc, maxPower, targetSoC, curve)
 				if err != nil {
 					return &UsageError{Err: err}
 				}
 				req.EV = params
+				req.EVPreset = preset
 			case control.ActionUnplug:
 				if err := wantArgs(0, "no arguments"); err != nil {
 					return err
@@ -85,7 +88,7 @@ func newExec() *cobra.Command {
 				return &UsageError{Err: fmt.Errorf("unknown action %q: want plug, unplug or tap", action)}
 			}
 			if evFlagsGiven && action != control.ActionPlug {
-				return &UsageError{Err: errors.New("--battery, --soc, --max-power and --target-soc only apply to plug")}
+				return &UsageError{Err: errors.New("--ev, --battery, --soc, --max-power, --target-soc and --curve only apply to plug")}
 			}
 
 			sites, err := runningSites(cmd.Context(), siteName)
@@ -171,12 +174,14 @@ func newExec() *cobra.Command {
 	flags.StringVar(&soc, "soc", "", "plug: starting state of charge, such as 20% (default 20%)")
 	flags.StringVar(&maxPower, "max-power", "", "plug: most power the EV accepts, such as 11kW (default: no limit)")
 	flags.StringVar(&targetSoC, "target-soc", "", "plug: state of charge at which the EV stops, such as 80% (default 100%)")
+	flags.StringVar(&curve, "curve", "", "plug: charge curve, "+strings.Join(ev.BuiltinCurveNames(), " or ")+" (default standard)")
+	flags.StringVar(&preset, "ev", "", "plug: EV preset from the site file")
 	addFormatFlag(cmd, &format)
 	return cmd
 }
 
-func parseEVFlags(battery, soc, maxPower, targetSoC string) (control.EVParams, error) {
-	var params control.EVParams
+func parseEVFlags(battery, soc, maxPower, targetSoC, curve string) (ev.Overrides, error) {
+	var params ev.Overrides
 	if battery != "" {
 		v, err := ev.ParseEnergy(battery)
 		if err != nil {
@@ -205,6 +210,13 @@ func parseEVFlags(battery, soc, maxPower, targetSoC string) (control.EVParams, e
 			return params, fmt.Errorf("--target-soc: %w", err)
 		}
 		params.TargetSoC = &v
+	}
+	if curve != "" {
+		c, err := ev.BuiltinCurve(curve)
+		if err != nil {
+			return params, fmt.Errorf("--curve: %w", err)
+		}
+		params.Curve = &c
 	}
 	return params, nil
 }

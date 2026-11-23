@@ -11,6 +11,7 @@ import (
 	"github.com/Amraa1/plugyard/internal/charger"
 	"github.com/Amraa1/plugyard/internal/control"
 	"github.com/Amraa1/plugyard/internal/csmstest"
+	"github.com/Amraa1/plugyard/internal/ev"
 	"github.com/Amraa1/plugyard/internal/model"
 	"github.com/Amraa1/plugyard/internal/ocpp/v16"
 	"github.com/Amraa1/plugyard/internal/site"
@@ -69,7 +70,7 @@ func startSite(t *testing.T, dataDir, name string, csms *csmstest.CSMS, ids ...s
 		csms.WaitForCalls(t, id, v16.ActionStatusNotification, 1)
 	}
 
-	server, err := control.Serve(dataDir, site.New(name, chargers...))
+	server, err := control.Serve(dataDir, site.New(name, chargers...), nil)
 	if err != nil {
 		t.Fatalf("Serve: %v", err)
 	}
@@ -137,7 +138,7 @@ func TestExecRunsAnActionAndReportsEachCharger(t *testing.T) {
 		ChargePointIDs: []string{"A", "B", "GHOST"},
 		Action:         control.ActionPlug,
 		Connector:      1,
-		EV:             control.EVParams{SoC: &soc},
+		EV:             ev.Overrides{SoC: &soc},
 	}
 	results, err := client.Exec(ctx, plug)
 	if err != nil {
@@ -196,7 +197,7 @@ func TestServeRefusesASiteThatIsAlreadyRunning(t *testing.T) {
 	dir := shortTempDir(t)
 	startSite(t, dir, "depot", csms, "A")
 
-	_, err := control.Serve(dir, site.New("depot"))
+	_, err := control.Serve(dir, site.New("depot"), nil)
 	if !errors.Is(err, control.ErrAlreadyRunning) {
 		t.Errorf("second Serve returned %v, want ErrAlreadyRunning", err)
 	}
@@ -221,7 +222,7 @@ func TestSocketLeftByADeadProcessIsCleanedUp(t *testing.T) {
 	if err := os.WriteFile(stale, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	server, err := control.Serve(dir, site.New("depot"))
+	server, err := control.Serve(dir, site.New("depot"), nil)
 	if err != nil {
 		t.Fatalf("Serve over a dead socket: %v", err)
 	}
@@ -248,7 +249,7 @@ func TestSocketPathIsShortAndStable(t *testing.T) {
 func TestServeExplainsADataDirectoryPathThatIsTooLong(t *testing.T) {
 	dir := shortTempDir(t) + "/" + strings.Repeat("deep/", 30)
 
-	_, err := control.Serve(dir, site.New("depot"))
+	_, err := control.Serve(dir, site.New("depot"), nil)
 	if err == nil || !strings.Contains(err.Error(), "too long for a socket") || !strings.Contains(err.Error(), "PLUGYARD_DATA_DIR") {
 		t.Errorf("Serve returned %v, want an explanation that names PLUGYARD_DATA_DIR", err)
 	}

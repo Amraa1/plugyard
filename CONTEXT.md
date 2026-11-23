@@ -55,3 +55,11 @@ _Avoid_: Card, RFID, token, badge
 **Action**:
 Something done to a running charger from outside, such as plugging in an EV, presenting a tag or raising a fault.
 _Avoid_: Command, operation, event
+
+**Charge curve**:
+The share of its maximum power that an EV accepts at each state of charge.
+_Avoid_: Power curve, charging profile (an OCPP term for a limit the CSMS sets)
+
+**ID template**:
+The text in a site file from which the charge point IDs of an entry's chargers are made, such as `FAST-{n:03}`.
+_Avoid_: ID pattern (a pattern selects chargers in a command), naming scheme

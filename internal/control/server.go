@@ -13,7 +13,6 @@ import (
 
 	"github.com/Amraa1/plugyard/internal/charger"
 	"github.com/Amraa1/plugyard/internal/datadir"
-	"github.com/Amraa1/plugyard/internal/ev"
 	"github.com/Amraa1/plugyard/internal/site"
 )
 
@@ -28,13 +27,15 @@ const maxSocketPath = 103
 // Server answers commands for one running site.
 type Server struct {
 	site     *site.Site
+	shutdown func()
 	path     string
 	listener net.Listener
 	http     *http.Server
 }
 
-// Serve starts answering commands for s on its socket in dataDir.
-func Serve(dataDir string, s *site.Site) (*Server, error) {
+// Serve starts answering commands for s on its socket in dataDir. shutdown
+// is called when a command asks the site to shut down.
+func Serve(dataDir string, s *site.Site, shutdown func()) (*Server, error) {
 	if err := os.MkdirAll(dataDir, 0o700); err != nil {
 		return nil, err
 	}
@@ -60,11 +61,12 @@ func Serve(dataDir string, s *site.Site) (*Server, error) {
 	}
 	_ = os.Chmod(path, 0o600)
 
-	srv := &Server{site: s, path: path, listener: listener}
+	srv := &Server{site: s, shutdown: shutdown, path: path, listener: listener}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/info", srv.handleInfo)
 	mux.HandleFunc("GET /v1/chargers", srv.handleChargers)
 	mux.HandleFunc("POST /v1/exec", srv.handleExec)
+	mux.HandleFunc("POST /v1/shutdown", srv.handleShutdown)
 	srv.http = &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second}
 
 	go func() { _ = srv.http.Serve(listener) }()
@@ -82,7 +84,21 @@ func (srv *Server) Close() {
 }
 
 func (srv *Server) handleInfo(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, Info{Protocol: ProtocolVersion, Site: srv.site.Name(), PID: os.Getpid()})
+	writeJSON(w, Info{
+		Protocol: ProtocolVersion,
+		Site:     srv.site.Name(),
+		PID:      os.Getpid(),
+		Chargers: len(srv.site.Chargers()),
+		CSMS:     srv.site.CSMS(),
+	})
+}
+
+func (srv *Server) handleShutdown(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, struct{}{})
+	if srv.shutdown != nil {
+		// Answer first: shutting down closes this very connection.
+		go srv.shutdown()
+	}
 }
 
 func (srv *Server) handleChargers(w http.ResponseWriter, _ *http.Request) {
@@ -127,24 +143,15 @@ func (srv *Server) exec(ctx context.Context, id string, req ExecRequest) (string
 	if c == nil {
 		return "", errors.New("no such charger in this site")
 	}
-	return runAction(ctx, c, req)
+	return srv.runAction(ctx, c, req)
 }
 
-func runAction(ctx context.Context, c *charger.Charger, req ExecRequest) (string, error) {
+func (srv *Server) runAction(ctx context.Context, c *charger.Charger, req ExecRequest) (string, error) {
 	switch req.Action {
 	case ActionPlug:
-		params := ev.Defaults()
-		if v := req.EV.BatteryWh; v != nil {
-			params.BatteryWh = *v
-		}
-		if v := req.EV.SoC; v != nil {
-			params.SoC = *v
-		}
-		if v := req.EV.MaxPowerW; v != nil {
-			params.MaxPowerW = *v
-		}
-		if v := req.EV.TargetSoC; v != nil {
-			params.TargetSoC = *v
+		params, err := srv.site.EVParams(c.ID(), req.EVPreset, req.EV)
+		if err != nil {
+			return "", err
 		}
 		return c.Plug(ctx, req.Connector, params)
 	case ActionUnplug:

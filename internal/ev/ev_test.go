@@ -140,3 +140,95 @@ func TestParseEnergyAndPercent(t *testing.T) {
 		t.Error("ParsePercent(120%) succeeded, want an error")
 	}
 }
+
+func TestCurveAt(t *testing.T) {
+	dc, err := BuiltinCurve(CurveDCFast)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct{ soc, want float64 }{
+		{0, 0.30}, {0.05, 0.65}, {0.10, 1}, {0.30, 1}, {0.50, 1},
+		{0.65, 0.64}, {0.80, 0.28}, {0.90, 0.175}, {1, 0.07},
+	}
+	for _, tc := range cases {
+		if got := dc.At(tc.soc); !near(got, tc.want, 1e-9) {
+			t.Errorf("dc-fast at %.0f%% = %.3f, want %.3f", tc.soc*100, got, tc.want)
+		}
+	}
+
+	// The zero Curve is the standard curve.
+	var zero Curve
+	if zero.At(0.5) != 1 || !near(zero.At(0.9), 0.55, 1e-9) {
+		t.Errorf("zero curve at 50%% and 90%% = %.2f and %.2f, want 1 and 0.55", zero.At(0.5), zero.At(0.9))
+	}
+
+	if _, err := BuiltinCurve("warp"); err == nil {
+		t.Error("BuiltinCurve(warp) succeeded, want an error")
+	}
+}
+
+func TestCurveBelongsToTheEV(t *testing.T) {
+	dc, _ := BuiltinCurve(CurveDCFast)
+
+	// A 230 kW EV on a 350 kW connector shows its whole curve.
+	fast := func(soc float64) *EV {
+		return New(Params{BatteryWh: 82000, SoC: soc, MaxPowerW: 230000, TargetSoC: 1, Curve: dc})
+	}
+	if got := fast(0.30).Power(350000); got != 230000 {
+		t.Errorf("at 30%% on a 350 kW connector: %.0f W, want the EV's 230000", got)
+	}
+	if got := fast(0.80).Power(350000); !near(got, 64400, 1) {
+		t.Errorf("at 80%% on a 350 kW connector: %.0f W, want 64400", got)
+	}
+
+	// The same EV on a 50 kW connector stays at 50 kW while its curve is
+	// above that, and follows the curve once it drops below.
+	if got := fast(0.80).Power(50000); got != 50000 {
+		t.Errorf("at 80%% on a 50 kW connector: %.0f W, want the connector's 50000", got)
+	}
+	if got := fast(0.95).Power(50000); !near(got, 230000*0.1225, 1) {
+		t.Errorf("at 95%% on a 50 kW connector: %.0f W, want %.0f", got, 230000*0.1225)
+	}
+
+	// With no maximum of its own, the EV takes the connector's.
+	open := New(Params{BatteryWh: 60000, SoC: 0, TargetSoC: 1, Curve: dc})
+	if got := open.Power(100000); !near(got, 30000, 1) {
+		t.Errorf("no EV maximum, at 0%% on a 100 kW connector: %.0f W, want 30000", got)
+	}
+}
+
+func TestCurveValidation(t *testing.T) {
+	bad := map[string][]Point{
+		"one point":           {{0, 1}},
+		"does not start at 0": {{0.1, 1}, {1, 0.5}},
+		"does not end at 100": {{0, 1}, {0.9, 0.5}},
+		"reaches zero":        {{0, 1}, {1, 0}},
+		"above 100% power":    {{0, 1.2}, {1, 0.5}},
+		"goes backwards":      {{0, 1}, {0.5, 1}, {0.4, 0.8}, {1, 0.1}},
+	}
+	for name, points := range bad {
+		if _, err := NewCurve(points); err == nil {
+			t.Errorf("%s: NewCurve succeeded, want an error", name)
+		}
+	}
+	if _, err := NewCurve([]Point{{0, 0.5}, {1, 0.5}}); err != nil {
+		t.Errorf("a valid curve was rejected: %v", err)
+	}
+	for _, name := range BuiltinCurveNames() {
+		c, _ := BuiltinCurve(name)
+		if err := c.Validate(); err != nil {
+			t.Errorf("built-in curve %s is invalid: %v", name, err)
+		}
+	}
+}
+
+func TestWithAppliesOnlyWhatWasGiven(t *testing.T) {
+	soc, battery := 0.5, 82000.0
+	dc, _ := BuiltinCurve(CurveDCFast)
+
+	got := Defaults().With(Overrides{SoC: &soc}).With(Overrides{BatteryWh: &battery, Curve: &dc})
+
+	if got.SoC != 0.5 || got.BatteryWh != 82000 || got.TargetSoC != 1 || got.Curve.Name != CurveDCFast {
+		t.Errorf("With = %+v", got)
+	}
+}

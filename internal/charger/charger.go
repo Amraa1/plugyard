@@ -53,6 +53,9 @@ type Config struct {
 	// Zero means 1. Protocol timers are not affected.
 	Speed  float64
 	Timing Timing
+	// BeforeDial, if set, is called before every connection attempt and
+	// may wait. A site uses it to pace the connections of its chargers.
+	BeforeDial func(ctx context.Context) error
 	// Log, if set, receives the charger's events and OCPP messages. It is
 	// called from several goroutines and must not block.
 	Log func(Entry)
@@ -250,6 +253,11 @@ func (c *Charger) Run(ctx context.Context) error {
 // session runs one connection from dial to disconnect. It reports whether
 // the connection was established, and why it ended.
 func (c *Charger) session(ctx context.Context) (connected bool, err error) {
+	if c.cfg.BeforeDial != nil {
+		if err := c.cfg.BeforeDial(ctx); err != nil {
+			return false, err
+		}
+	}
 	dialCtx, cancel := context.WithTimeout(ctx, c.cfg.Timing.CallTimeout)
 	conn, err := ocppj.Dial(dialCtx, c.url, ocppj.DialOptions{
 		Options:            ocppj.Options{OnFrame: c.frame},

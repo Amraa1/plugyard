@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-// Params are the four parameters of an EV.
+// Params are the parameters of an EV.
 type Params struct {
 	// BatteryWh is the battery capacity in Wh.
 	BatteryWh float64
@@ -21,6 +21,9 @@ type Params struct {
 	// TargetSoC is the state of charge at which the EV stops charging, from
 	// 0 to 1.
 	TargetSoC float64
+	// Curve is the charge curve: the share of its maximum power the EV
+	// accepts at each state of charge. The zero value is the standard curve.
+	Curve Curve
 }
 
 // Defaults returns the built-in EV: 60 kWh, 20% charged, no power limit,
@@ -41,15 +44,8 @@ func (p Params) Validate() error {
 	case p.MaxPowerW < 0:
 		return fmt.Errorf("the maximum power cannot be negative")
 	}
-	return nil
+	return p.Curve.Validate()
 }
-
-// The charge curve: full power up to taperStart, then falling linearly to
-// taperFloor of full power at 100%.
-const (
-	taperStart = 0.80
-	taperFloor = 0.10
-)
 
 // EV is a plugged-in EV.
 type EV struct {
@@ -74,19 +70,21 @@ func (e *EV) Full() bool { return e.soc >= e.params.TargetSoC }
 
 // Power returns the power in W the EV draws right now when the connector
 // offers up to offeredW.
+//
+// The charge curve belongs to the EV: it scales the EV's own maximum power,
+// and the connector then caps the result. An EV whose maximum is far above
+// the connector's therefore charges at the connector's full power until late,
+// as a fast-charging car does on a slow charger. An EV with no maximum of
+// its own takes the connector's as its maximum.
 func (e *EV) Power(offeredW float64) float64 {
 	if e.Full() || offeredW <= 0 {
 		return 0
 	}
-	available := offeredW
-	if e.params.MaxPowerW > 0 && e.params.MaxPowerW < available {
-		available = e.params.MaxPowerW
+	maximum := e.params.MaxPowerW
+	if maximum <= 0 {
+		maximum = offeredW
 	}
-	if e.soc <= taperStart {
-		return available
-	}
-	progress := (e.soc - taperStart) / (1 - taperStart)
-	return available * (1 - (1-taperFloor)*progress)
+	return min(offeredW, maximum*e.params.Curve.At(e.soc))
 }
 
 // Charge advances the EV by d of charging with up to offeredW on offer, and
