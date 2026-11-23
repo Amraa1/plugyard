@@ -1,0 +1,14 @@
+# A 50 kW DC fast charger with two connectors.
+# Try it with:
+#   plugyard run examples/Chargerfile --csms ws://localhost:9000/ocpp --id CP-1
+vendor: Acme
+model: FastOne 50
+firmware: 1.4.2
+connectors:
+  - { id: 1, type: CCS2, maxPower: 50kW }
+  - { id: 2, type: CHAdeMO, maxPower: 50kW }
+config:
+  HeartbeatInterval: 300
+  MeterValueSampleInterval: 60
+onEvFull: stop     # stop | suspend
+startOn: tap       # tap | plug

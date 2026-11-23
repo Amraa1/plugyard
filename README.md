@@ -2,7 +2,15 @@
 
 A terminal tool that simulates EV chargers, so you can develop and test a CSMS (charging station management system) without hardware. Its command line follows Docker's conventions: a file describes a kind of charger, a YAML file starts many of them together, and `ps`, `logs` and `exec` operate on the running ones.
 
-> **Status: early implementation.** The V1 design is complete and written down in [docs/SPEC.md](docs/SPEC.md). Only the project skeleton and `plugyard version` exist so far, so there is nothing useful to install yet. The examples below show the planned interface.
+> **Status: early implementation.** The V1 design is complete and written down in [docs/SPEC.md](docs/SPEC.md). So far one charger can connect to a CSMS, boot, report its connectors and send heartbeats. Charging sessions, sites and the other commands under "Planned usage" are not built yet.
+
+## What works today
+
+```sh
+plugyard run examples/Chargerfile --csms ws://localhost:9000/ocpp --id CP-1
+```
+
+This connects to `ws://localhost:9000/ocpp/CP-1`, sends `BootNotification`, a `StatusNotification` per connector and then heartbeats, printing every event and OCPP message until you press Ctrl+C. Add `--password` (or set `PLUGYARD_CSMS_PASSWORD`) for Basic Auth over `wss://`.
 
 ## What V1 will do
 
