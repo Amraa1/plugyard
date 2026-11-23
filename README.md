@@ -2,7 +2,7 @@
 
 A terminal tool that simulates EV chargers, so you can develop and test a CSMS (charging station management system) without hardware. Its command line follows Docker's conventions: a file describes a kind of charger, a YAML file starts many of them together, and `ps`, `logs` and `exec` operate on the running ones.
 
-> **Status: design stage.** The V1 design is complete and written down in [docs/SPEC.md](docs/SPEC.md). Nothing is implemented yet, so there is nothing to install. The examples below show the planned interface.
+> **Status: early implementation.** The V1 design is complete and written down in [docs/SPEC.md](docs/SPEC.md). Only the project skeleton and `plugyard version` exist so far, so there is nothing useful to install yet. The examples below show the planned interface.
 
 ## What V1 will do
 
@@ -48,6 +48,16 @@ plugyard exec FAST-001 tap 04A1B2C3      # present an RFID tag
 plugyard logs FAST-001 -f                # follow events and OCPP messages
 plugyard kill FAST-001                   # simulate a power cut
 plugyard site down                       # stop; state is kept for next time
+```
+
+## Building from source
+
+Requires Go 1.26 or newer.
+
+```sh
+go build ./cmd/plugyard
+./plugyard version
+go test ./...
 ```
 
 ## Documentation
