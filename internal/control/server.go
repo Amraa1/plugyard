@@ -66,6 +66,7 @@ func Serve(dataDir string, s *site.Site, shutdown func()) (*Server, error) {
 	mux.HandleFunc("GET /v1/info", srv.handleInfo)
 	mux.HandleFunc("GET /v1/chargers", srv.handleChargers)
 	mux.HandleFunc("POST /v1/exec", srv.handleExec)
+	mux.HandleFunc("POST /v1/power", srv.handlePower)
 	mux.HandleFunc("POST /v1/shutdown", srv.handleShutdown)
 	srv.http = &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second}
 
@@ -88,7 +89,8 @@ func (srv *Server) handleInfo(w http.ResponseWriter, _ *http.Request) {
 		Protocol: ProtocolVersion,
 		Site:     srv.site.Name(),
 		PID:      os.Getpid(),
-		Chargers: len(srv.site.Chargers()),
+		Chargers: srv.site.Len(),
+		Powered:  srv.site.Powered(),
 		CSMS:     srv.site.CSMS(),
 	})
 }
@@ -102,9 +104,12 @@ func (srv *Server) handleShutdown(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (srv *Server) handleChargers(w http.ResponseWriter, _ *http.Request) {
-	states := []ChargerState{}
-	for _, c := range srv.site.Chargers() {
-		states = append(states, ChargerState{Site: srv.site.Name(), Snapshot: c.Snapshot()})
+	states := []wireState{}
+	for _, m := range srv.site.States() {
+		states = append(states, wireState{
+			ChargerState: ChargerState{Site: srv.site.Name(), Name: m.Name, Snapshot: m.Snapshot},
+			Powered:      m.Powered,
+		})
 	}
 	writeJSON(w, states)
 }
@@ -140,10 +145,59 @@ func (srv *Server) handleExec(w http.ResponseWriter, r *http.Request) {
 
 func (srv *Server) exec(ctx context.Context, id string, req ExecRequest) (string, error) {
 	c := srv.site.Charger(id)
-	if c == nil {
+	switch {
+	case c != nil:
+		return srv.runAction(ctx, c, req)
+	case srv.site.Has(id):
+		return "", errors.New("the charger is stopped")
+	default:
 		return "", errors.New("no such charger in this site")
 	}
-	return srv.runAction(ctx, c, req)
+}
+
+func (srv *Server) handlePower(w http.ResponseWriter, r *http.Request) {
+	var req PowerRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "the request is not valid JSON", http.StatusBadRequest)
+		return
+	}
+
+	var op func(id string) (string, error)
+	switch req.Op {
+	case OpStart:
+		op = srv.site.Start
+	case OpStop:
+		op = srv.site.Stop
+	case OpRestart:
+		op = srv.site.Restart
+	case OpKill:
+		op = srv.site.Kill
+	case OpRemove:
+		op = func(id string) (string, error) { return srv.site.Remove(id, req.Force) }
+	default:
+		http.Error(w, fmt.Sprintf("unknown operation %q", req.Op), http.StatusBadRequest)
+		return
+	}
+
+	results := make([]ExecResult, len(req.ChargePointIDs))
+	var wg sync.WaitGroup
+	for i, id := range req.ChargePointIDs {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			result := ExecResult{ChargePointID: id}
+			message, err := op(id)
+			if err != nil {
+				result.Message = err.Error()
+			} else {
+				result.OK = true
+				result.Message = message
+			}
+			results[i] = result
+		}()
+	}
+	wg.Wait()
+	writeJSON(w, results)
 }
 
 func (srv *Server) runAction(ctx context.Context, c *charger.Charger, req ExecRequest) (string, error) {

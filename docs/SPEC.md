@@ -53,7 +53,8 @@ One site must run hundreds to a few thousand chargers comfortably on a developer
 |---|---|
 | **Chargerfile** | A YAML file declaring one model |
 | **Model** | A kind of charger: vendor, model name, firmware, connectors, power, default configuration, behavior settings |
-| **Charger** | One running simulated instance, identified only by its **charge point ID** |
+| **Charger** | One simulated instance, known to the CSMS only by its **charge point ID** |
+| **Name** | A second handle for a charger, used only on the command line and unique on the machine. It is given by the user or made up, as Docker names containers |
 | **Connector** | A numbered outlet on a charger (1, 2, ...), as in OCPP 1.6 |
 | **Site** | A named group of chargers declared in a site file and started together |
 | **EV** | The simulated vehicle on a connector; four parameters that exist only while plugged in |
@@ -68,11 +69,12 @@ Every charger belongs to a site. A charger started with `plugyard run` belongs t
 Rules that apply to every command:
 
 - Required values are positional arguments; optional values are flags.
-- A charger argument accepts a glob pattern (`'FAST-*'`, `'*'`) and then acts on every match.
-- Charger commands see chargers from all running sites. `-s, --site <name>` narrows to one site.
-- The same charge point ID may exist in two running sites. A command whose charger argument is ambiguous fails and asks for `-s`.
-- `--format json` is available on `ps`, `site ls`, `inspect`, `stats`, `logs` and `exec`. It prints one JSON object per line, as Docker does.
-- Output is colored when it goes to a terminal: green for `ok`, `online` and `Charging`; yellow for `connecting`, `Preparing`, `Finishing` and the suspended statuses; red for `failed`, `offline` and `Faulted`. Color is never the only signal, and it is switched off when output is piped or redirected or when the `NO_COLOR` environment variable is set.
+- A charger argument is a charge point ID or a name. It also accepts a glob pattern (`'FAST-*'`, `'*'`), which is matched against both and acts on every match.
+- Charger commands see chargers from all sites. `-s, --site <name>` narrows to one site.
+- The same charge point ID may exist in two sites. A command whose charger argument is ambiguous fails and asks for `-s` or the charger's name. A name is never ambiguous.
+- Output is labelled with the charge point ID, since that is what the CSMS shows. The name is shown by `ps`.
+- `--format json` is available on `ps`, `site ls`, `inspect`, `stats`, `logs`, `exec`, `start`, `stop`, `restart`, `kill` and `rm`. It prints one JSON object per line, as Docker does.
+- Output is colored when it goes to a terminal: green for `ok`, `online`, `running` and `Charging`; yellow for `connecting`, `Preparing`, `Finishing` and the suspended statuses; red for `failed`, `offline` and `Faulted`. Color is never the only signal, and it is switched off when output is piped or redirected or when the `NO_COLOR` environment variable is set.
 - Exit codes: `0` success, `1` runtime failure, `2` usage or validation error.
 - Starting a site whose name is already running fails with exit code `1`. This includes a second `plugyard run` with the same charge point ID.
 
@@ -82,15 +84,18 @@ Site commands act on the `site.yaml` in the current directory unless `-f, --file
 
 | Command | Effect |
 |---|---|
-| `plugyard site up [-d] [--speed N] [--connect-rate N]` | Create the site's chargers from the site file, reusing saved state, and start them. Runs in the foreground showing the log of every charger, as `docker compose up` does; `-d` runs it in the background. |
+| `plugyard site up [-d] [-y] [--speed N] [--connect-rate N]` | Read the site file, create the site's chargers, reusing saved state, and start all of them. Runs in the foreground showing the log of every charger, as `docker compose up` does; `-d` runs it in the background. |
 | `plugyard site stop` | Power off all chargers. They stay listed in `ps -a`. State is kept. |
-| `plugyard site start` | Power on the chargers of a stopped site. |
+| `plugyard site start` | Power on every charger of a stopped site, in the background, exactly as saved. No file is read. |
 | `plugyard site down [--reset]` | Stop and remove the chargers from the listing. Saved state is kept unless `--reset` is given, which wipes it. |
-| `plugyard site ls [-a]` | List running sites; `-a` includes stopped sites and sites that only have saved state. |
+| `plugyard site ls [-a]` | List running sites; `-a` includes sites that are `stopped` or `down`. |
 | `plugyard site validate` | Check the site file and the Chargerfiles it references without starting anything, and list the chargers it would create with their charge point IDs. |
 
 - `site up -d` starts a background copy of plugyard, waits until it reports the site running, and returns (see ADR 0005). The background process writes its log to a file in the data directory. It keeps running after the terminal closes, and ends when the user signs out.
-- `site down` shuts a site down in an orderly way: transactions end with `StopTransaction`, then connections close. It works on a site in the foreground of another terminal as well as one in the background.
+- `site stop` and `site down` shut a site down in an orderly way: transactions end with `StopTransaction`, then connections close. They work on a site in the foreground of another terminal as well as one in the background. Pressing Ctrl+C in a foreground `site up` does the same as `site stop`.
+- `site up` and `site start` differ as in Docker compose. `site up` reads the site file again and applies what changed. `site start` reads nothing and works from any directory with `-s <name>`. A site that was taken down is refused by `site start`, with a message to use `site up`.
+- A site is `running` while its process lives, `stopped` when it has saved state and no process, and `down` after `site down`. A site whose process was killed or crashed shows as `stopped`.
+- `site down --reset` does not ask for confirmation.
 - Every charger connects at once by default. `--connect-rate N`, or `connectRate:` in the site file, limits new connections to N per second; `0` means no limit.
 - On Linux and macOS each connection uses one of the process's open files. `site up` raises that limit itself where the system allows, and otherwise stops with a message giving the `ulimit -n` value needed.
 - In the foreground log, each charge point ID has its own color on a terminal.
@@ -99,18 +104,26 @@ Site commands act on the `site.yaml` in the current directory unless `-f, --file
 
 | Command | Effect |
 |---|---|
-| `plugyard ps [-a]` | List running chargers with site, connection state (`connecting`, `online` or `offline`) and the status of each connector; `-a` includes stopped ones. |
+| `plugyard ps [-a]` | List running chargers with name, site, connection state (`connecting`, `online` or `offline`) and the status of each connector; `-a` includes stopped ones, shown as `stopped` with the status each connector will report on start. |
 | `plugyard logs <charger> [-f] [--events] [--since <duration>]` | Show events and OCPP messages. |
 | `plugyard stats` | Live table of power, energy delivered and message counts per charger. |
 | `plugyard inspect <charger>` | Full state: model, configuration keys, charging profiles, connectors, transaction. |
 | `plugyard start <charger>` | Power on. |
-| `plugyard stop <charger>` | Orderly shutdown. |
+| `plugyard stop <charger>` | Orderly shutdown. State is kept. |
 | `plugyard restart <charger>` | `stop` then `start`. |
-| `plugyard kill <charger>` | Power cut. |
+| `plugyard kill <charger>` | Power cut. State is kept as it was last saved. |
 | `plugyard rm [-f] <charger>` | Wipe the charger's saved state. Refuses a running charger unless `-f`, which stops it first. The charger is recreated fresh on the next `site up` if the site file still declares it. |
 | `plugyard run <Chargerfile> --csms <url> --id <charge point ID>` | Start one charger without a site file, in an implicit site named after the ID. |
 
-`run` stays in the foreground printing the charger's log until interrupted, then shuts the charger down in an orderly way. It also accepts `--speed N`, with the same meaning as on `site up`, `--password <password>` for HTTP Basic Auth, which falls back to the `PLUGYARD_CSMS_PASSWORD` environment variable so the password can stay off the command line, and `--insecure-skip-verify`.
+`start`, `stop`, `restart`, `kill` and `rm` follow Docker, and print one line per charger as `exec` does:
+
+- `stop` asks, `kill` cuts, and only `rm` deletes. A killed charger still exists and comes back with `start`.
+- Stopping, killing or removing the last running charger of a site ends the site's process; the site is then `stopped`.
+- `start` on a charger whose site has no process starts the site in the background with only the named chargers powered on. The others stay stopped until they are started or `site start` is run.
+- `stop` on a charger that is already stopped succeeds. `kill` on one fails.
+- `rm` does not ask for confirmation. Removing the last charger of a site removes the site.
+
+`run` stays in the foreground printing the charger's log until interrupted, then shuts the charger down in an orderly way. Its state is saved like that of any other charger: running the same charge point ID again brings the same charger back, and `plugyard rm <ID>` wipes it. `--name <name>` gives the charger its name. `--rm` saves nothing, for a throwaway charger. `-y` answers the question `site up` asks when the Chargerfile no longer fits the saved state. It also accepts `--speed N`, with the same meaning as on `site up`, `--password <password>` for HTTP Basic Auth, which falls back to the `PLUGYARD_CSMS_PASSWORD` environment variable so the password can stay off the command line, and `--insecure-skip-verify`.
 
 ### Actions
 
@@ -197,13 +210,15 @@ chargers:
   lobby:
     model: ./ac.Chargerfile
     id: "LOBBY-1"
+    name: front-desk                   # optional; a name is made up otherwise
     config: { MeterValueSampleInterval: 10 }
 ```
 
 - `name` identifies the site and must be unique per user.
 - `csms` applies to the whole site; a charger entry may override any part of it.
 - Each entry under `chargers` instantiates a model `count` times (default 1), with optional `config` overrides and a default `ev`.
-- Entry names (`fast`, `lobby`) are used only inside the file. Everywhere else a charger is known by its charge point ID.
+- Entry names (`fast`, `lobby`) are used only inside the file. Everywhere else a charger is known by its charge point ID or its name.
+- `name` gives a charger its name, and is allowed only on an entry that creates one charger. Every other charger gets a made-up name of the form `adjective_noun`, such as `brisk_volt`, when it is first created. A name is letters, digits, `_`, `.` and `-`. It stays with the charger until `rm` or `--reset`, and a name already in use on the machine is refused.
 - A Chargerfile path is relative to the site file.
 - Unknown settings are errors, and `site validate` reports every problem at once.
 
@@ -279,9 +294,13 @@ A curve must start at 0% and end at 100% state of charge, and its power share mu
 | Trigger | Simulates | What the CSMS sees |
 |---|---|---|
 | `start` | Power on | `BootNotification`, then `StatusNotification` for each connector |
-| `stop` | Orderly shutdown | Active transactions end with `StopTransaction` (reason `Other`), then the connection closes |
-| `kill`, or the machine shutting down | Power cut | The connection drops with no message. On the next start the charger boots and sends `StopTransaction` with reason `PowerLoss` and the last saved meter reading |
+| `stop` | Orderly shutdown | Active transactions end with `StopTransaction` (reason `Other`), then the connection closes. If the CSMS cannot be reached, the message is kept and sent after the next start |
+| `kill`, a crash, or the machine losing power | Power cut | The connection drops with no message. On the next start the charger boots and sends `StopTransaction` with reason `PowerLoss`, the last saved meter reading and the time of that reading |
 | `exec ... offline` | Network loss | The connection drops. Charging continues, and transaction messages are queued and replayed in order on `online` |
+
+- A charger that starts and finds a transaction still open in its saved state was not shut down in an orderly way, whatever the cause, and reports that transaction with `PowerLoss`. No promise is made that a machine shutdown is orderly: Linux and macOS give a process a moment to finish, in which plugyard ends the transactions properly, and a background site on Windows gets none.
+- The EV stays plugged in across a stop or a power cut, with its state of charge. After the start the connector reports `Finishing` until the EV is unplugged. No transaction starts by itself, even with `startOn: plug`.
+- Messages still owed to the CSMS are saved, and are sent in order after the next boot, before anything new.
 
 ### Connection
 
@@ -308,6 +327,7 @@ A curve must start at 0% and end at 100% state of charge, and its power share mu
 - During a transaction the charger sends `MeterValues` every `MeterValueSampleInterval` seconds (default 60) with the measurands listed in the `MeterValuesSampledData` configuration key.
 - Supported measurands: `Energy.Active.Import.Register` (Wh), `Power.Active.Import` (W) and `SoC` (Percent). The default is the first two. A model of a DC charger adds `SoC` in its Chargerfile `config`; an AC charger cannot know the state of charge.
 - `StopTransaction` carries `transactionData` with the measurands in the `StopTxnSampledData` key, sampled at the start and the end of the transaction. The default is `Energy.Active.Import.Register`. Setting the key to empty sends no `transactionData`.
+- Meter readings are saved to disk every `MeterSaveInterval` seconds (default 5) during a transaction. This is plugyard's own configuration key, set like any other in a Chargerfile's `config`. It bounds the energy a power cut loses from the `meterStop` reported afterwards, as on a real meter.
 
 ### CSMS-initiated operations
 
@@ -322,12 +342,14 @@ Handled automatically with no user action: `RemoteStartTransaction`, `RemoteStop
 - There is no daemon. The `site up` process owns its chargers. Other commands find that process and talk to it over a local socket: a Unix domain socket file per running site, in the data directory (see ADR 0004).
 - A site does not start by itself after a reboot; run `plugyard site up -d` again.
 - `site stop`, `site start` and `site ls -a` depend on saved state: a stopped site has no process, so its chargers exist only on disk.
+- The implicit site of `plugyard run` is saved in the same way, unless `--rm` is given.
 - State is stored in one SQLite database per site, in a per-user data directory: `%LOCALAPPDATA%\plugyard` on Windows, `~/.local/share/plugyard` on Linux, `~/Library/Application Support/plugyard` on macOS.
 - The database is accessed through a pure-Go SQLite driver so that all platforms build without a C compiler.
 - The `PLUGYARD_DATA_DIR` environment variable overrides the data directory. Socket paths are limited to about 100 characters, so a data directory with a very long path is refused with a message saying so.
 
 Saved per charger:
 
+- Its name
 - A snapshot of the model and site-file settings it was created from
 - Configuration keys and their current values
 - Installed charging profiles
@@ -336,12 +358,24 @@ Saved per charger:
 - Messages queued while offline
 - Authorization cache, if enabled
 
-Write timing: configuration, charging profile and transaction changes are written immediately. Meter readings are written every few seconds and at each transaction event.
+A CSMS password is never saved. It is read again from where it came from whenever a site starts: the site file for a site, and the `PLUGYARD_CSMS_PASSWORD` environment variable for a charger started with `plugyard run`.
 
-When files and saved state disagree:
+Write timing: configuration, charging profile and transaction changes, and messages queued for the CSMS, are written immediately. Meter readings are written every `MeterSaveInterval` seconds and at each transaction event. Chargers that save at the same moment are written together.
 
-- For anything the CSMS changed, saved state wins. `--reset` returns to the files.
-- For structural edits (connectors added or removed, model changed, charger removed from the site file), `site up` lists the affected chargers and resets only those after confirmation.
+When files and saved state disagree, `site up` and `run` settle it:
+
+| Edit | Effect |
+|---|---|
+| Vendor, model name or firmware version | Applied. The next `BootNotification` carries the new values, as after a firmware update |
+| Connector type or maximum power, behavior settings, CSMS URL, default EV | Applied |
+| A configuration key | The file wins, unless the CSMS changed that key; then saved state wins |
+| The number of connectors | The charger's saved state is reset, after confirmation. It keeps its name |
+| A charger removed from the site file | The charger and its saved state are deleted, after confirmation |
+
+- Confirmation: the affected chargers are listed and `Reset these 3 chargers? [y/N]` is asked. Anything but yes stops the command with nothing changed and nothing started.
+- `-y, --yes` skips the question. Without a terminal to ask on, the command fails with exit code `1` and names that flag.
+- A charger that has never run has no state to lose and needs no confirmation.
+- `--reset` on `site down` returns the whole site to the files.
 
 ## 10. Scenarios
 

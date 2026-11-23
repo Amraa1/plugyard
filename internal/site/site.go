@@ -4,6 +4,7 @@ package site
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -12,81 +13,195 @@ import (
 
 	"github.com/Amraa1/plugyard/internal/charger"
 	"github.com/Amraa1/plugyard/internal/ev"
+	"github.com/Amraa1/plugyard/internal/model"
 )
+
+// Member is a charger of a site, whether powered on or not.
+type Member struct {
+	// ID is the charge point ID.
+	ID string
+	// Name is the charger's name, unique on the machine.
+	Name  string
+	Model *model.Model
+	CSMS  charger.CSMS
+	// EV names the EV preset used when a plug does not name one.
+	EV string
+}
+
+// Store is where a site keeps the state of its chargers.
+type Store interface {
+	// LoadState returns a charger's saved state, or nil if it has none.
+	LoadState(chargePointID string) (*charger.State, error)
+	SaveState(chargePointID string, state charger.State) error
+	// Remove deletes a charger and its state.
+	Remove(chargePointID string) error
+}
+
+// Config describes a site.
+type Config struct {
+	Name string
+	// Speed multiplies the rate of EV charging. Zero means 1.
+	Speed float64
+	// ConnectRate is the most new connections to open per second. Zero
+	// means no limit.
+	ConnectRate float64
+	// Presets holds the EV presets by name.
+	Presets map[string]ev.Overrides
+	// Log, if set, receives the log of every charger.
+	Log func(charger.Entry)
+	// Store, if set, keeps the chargers' state.
+	Store  Store
+	Timing charger.Timing
+}
+
+// MemberState is a member and where it stands.
+type MemberState struct {
+	Name string
+	// Powered says whether the charger is powered on.
+	Powered bool
+	charger.Snapshot
+}
 
 // Site is a running site.
 type Site struct {
-	name     string
-	chargers map[string]*charger.Charger
+	cfg   Config
+	pacer func(ctx context.Context) error
+	csms  []string
 
-	// csms lists the distinct CSMS URLs the site's chargers connect to.
-	csms []string
-	// presets holds the EV presets by name.
-	presets map[string]ev.Overrides
-	// defaultEV names, per charge point ID, the preset used when a plug
-	// does not name one.
-	defaultEV map[string]string
+	mu      sync.Mutex
+	members map[string]*member
+	// ctx is the context of Run; chargers are powered under it.
+	ctx context.Context
+	// powered counts the chargers that are powered on, and holds the
+	// operations that are about to power one on.
+	powered int
+	holds   int
+	closing bool
+	// idle is closed when the last powered charger has gone off.
+	idle     chan struct{}
+	idleOnce sync.Once
+	wg       sync.WaitGroup
 }
 
-// New returns a site with the given chargers.
-func New(name string, chargers ...*charger.Charger) *Site {
+type member struct {
+	Member
+	// charger is nil while the member is powered off.
+	charger *charger.Charger
+	cancel  func()
+	// done is closed when the charger has finished powering off.
+	done chan struct{}
+}
+
+// New checks the members and returns a site that is not running yet.
+func New(cfg Config, members []Member) (*Site, error) {
 	s := &Site{
-		name:      name,
-		chargers:  map[string]*charger.Charger{},
-		presets:   map[string]ev.Overrides{},
-		defaultEV: map[string]string{},
+		cfg:     cfg,
+		pacer:   NewPacer(cfg.ConnectRate),
+		members: map[string]*member{},
+		idle:    make(chan struct{}),
 	}
-	for _, c := range chargers {
-		s.chargers[c.ID()] = c
-	}
-	return s
-}
-
-// SetCSMS records the CSMS URLs the site's chargers connect to, for display.
-func (s *Site) SetCSMS(urls []string) {
 	seen := map[string]bool{}
-	s.csms = nil
-	for _, u := range urls {
-		if !seen[u] {
-			seen[u] = true
-			s.csms = append(s.csms, u)
+	for _, m := range members {
+		if _, err := charger.New(s.chargerConfig(m, nil)); err != nil {
+			return nil, fmt.Errorf("charger %s: %w", m.ID, err)
+		}
+		s.members[m.ID] = &member{Member: m}
+		if !seen[m.CSMS.URL] {
+			seen[m.CSMS.URL] = true
+			s.csms = append(s.csms, m.CSMS.URL)
 		}
 	}
 	sort.Strings(s.csms)
+	return s, nil
 }
 
-// SetPresets gives the site its EV presets.
-func (s *Site) SetPresets(presets map[string]ev.Overrides) {
-	s.presets = presets
-}
-
-// SetDefaultEV names the EV preset a charger uses when a plug does not name
-// one.
-func (s *Site) SetDefaultEV(chargePointID, preset string) {
-	if preset != "" {
-		s.defaultEV[chargePointID] = preset
+func (s *Site) chargerConfig(m Member, saved *charger.State) charger.Config {
+	cfg := charger.Config{
+		ID:         m.ID,
+		Model:      m.Model,
+		CSMS:       m.CSMS,
+		Speed:      s.cfg.Speed,
+		Timing:     s.cfg.Timing,
+		BeforeDial: s.pacer,
+		Log:        s.cfg.Log,
+		Restore:    saved,
 	}
+	if s.cfg.Store != nil {
+		id := m.ID
+		cfg.Save = func(state charger.State) error { return s.cfg.Store.SaveState(id, state) }
+	}
+	return cfg
 }
 
 // Name returns the site's name.
-func (s *Site) Name() string { return s.name }
+func (s *Site) Name() string { return s.cfg.Name }
 
 // CSMS returns the distinct CSMS URLs of the site, sorted.
 func (s *Site) CSMS() []string { return s.csms }
 
-// Chargers returns the site's chargers, sorted by charge point ID.
-func (s *Site) Chargers() []*charger.Charger {
-	out := make([]*charger.Charger, 0, len(s.chargers))
-	for _, c := range s.chargers {
-		out = append(out, c)
-	}
-	sort.Slice(out, func(i, j int) bool { return out[i].ID() < out[j].ID() })
-	return out
+// Len returns the number of chargers in the site, powered on or not.
+func (s *Site) Len() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.members)
 }
 
-// Charger returns the charger with the given charge point ID, or nil.
+// Powered returns the number of chargers that are powered on.
+func (s *Site) Powered() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.powered
+}
+
+// Charger returns the charger with the given charge point ID if it is
+// powered on, and nil otherwise.
 func (s *Site) Charger(id string) *charger.Charger {
-	return s.chargers[id]
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if m := s.members[id]; m != nil {
+		return m.charger
+	}
+	return nil
+}
+
+// Has reports whether the site has a charger with the given charge point ID.
+func (s *Site) Has(id string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.members[id] != nil
+}
+
+// States returns where every charger of the site stands, sorted by charge
+// point ID.
+func (s *Site) States() []MemberState {
+	type entry struct {
+		m Member
+		c *charger.Charger
+	}
+	s.mu.Lock()
+	entries := make([]entry, 0, len(s.members))
+	for _, m := range s.members {
+		entries = append(entries, entry{m.Member, m.charger})
+	}
+	s.mu.Unlock()
+	sort.Slice(entries, func(i, j int) bool { return entries[i].m.ID < entries[j].m.ID })
+
+	out := make([]MemberState, 0, len(entries))
+	for _, e := range entries {
+		state := MemberState{Name: e.m.Name}
+		if e.c != nil {
+			state.Powered = true
+			state.Snapshot = e.c.Snapshot()
+		} else {
+			var saved *charger.State
+			if s.cfg.Store != nil {
+				saved, _ = s.cfg.Store.LoadState(e.m.ID)
+			}
+			state.Snapshot = saved.Snapshot(e.m.ID, e.m.Model)
+		}
+		out = append(out, state)
+	}
+	return out
 }
 
 // EVParams works out the EV to plug into a charger. From weakest to
@@ -94,11 +209,14 @@ func (s *Site) Charger(id string) *charger.Charger {
 // with the plug, and the parameters given with the plug.
 func (s *Site) EVParams(chargePointID, preset string, given ev.Overrides) (ev.Params, error) {
 	params := ev.Defaults()
-	if name := s.defaultEV[chargePointID]; name != "" {
-		params = params.With(s.presets[name])
+	s.mu.Lock()
+	m := s.members[chargePointID]
+	s.mu.Unlock()
+	if m != nil && m.EV != "" {
+		params = params.With(s.cfg.Presets[m.EV])
 	}
 	if preset != "" {
-		o, ok := s.presets[preset]
+		o, ok := s.cfg.Presets[preset]
 		if !ok {
 			return params, fmt.Errorf("the site has no EV preset named %q%s", preset, s.presetHint())
 		}
@@ -108,31 +226,213 @@ func (s *Site) EVParams(chargePointID, preset string, given ev.Overrides) (ev.Pa
 }
 
 func (s *Site) presetHint() string {
-	if len(s.presets) == 0 {
+	if len(s.cfg.Presets) == 0 {
 		return "; it defines none"
 	}
-	names := make([]string, 0, len(s.presets))
-	for name := range s.presets {
+	names := make([]string, 0, len(s.cfg.Presets))
+	for name := range s.cfg.Presets {
 		names = append(names, name)
 	}
 	sort.Strings(names)
 	return "; it has " + strings.Join(names, ", ")
 }
 
-// Run powers on every charger and keeps the site running until ctx is
-// cancelled, which shuts every charger down in an orderly way.
-func (s *Site) Run(ctx context.Context) error {
-	var wg sync.WaitGroup
-	for _, c := range s.chargers {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			_ = c.Run(ctx)
-		}()
+// Run powers on the chargers for which powerOn reports true (all of them
+// when it is nil) and keeps the site running until ctx is cancelled, which
+// shuts every charger down in an orderly way, or until the last powered
+// charger has been stopped.
+func (s *Site) Run(ctx context.Context, powerOn func(chargePointID string) bool) error {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	s.mu.Lock()
+	s.ctx = ctx
+	var failed error
+	for _, m := range s.members {
+		if powerOn != nil && !powerOn(m.ID) {
+			continue
+		}
+		if err := s.power(m); err != nil {
+			failed = fmt.Errorf("charger %s: %w", m.ID, err)
+			break
+		}
 	}
-	wg.Wait()
+	nothing := s.powered == 0
+	s.mu.Unlock()
+
+	if failed == nil && !nothing {
+		select {
+		case <-ctx.Done():
+		case <-s.idle:
+		}
+	}
+	cancel()
+	// From here on nothing may be powered on, so that the wait below sees
+	// every charger.
+	s.mu.Lock()
+	s.closing = true
+	s.mu.Unlock()
+	s.wg.Wait()
+	return failed
+}
+
+// power powers a member on. The caller holds s.mu.
+func (s *Site) power(m *member) error {
+	if s.ctx == nil || s.closing || s.ctx.Err() != nil {
+		return errors.New("the site is shutting down")
+	}
+	var saved *charger.State
+	if s.cfg.Store != nil {
+		var err error
+		if saved, err = s.cfg.Store.LoadState(m.ID); err != nil {
+			return fmt.Errorf("cannot read its saved state: %w", err)
+		}
+	}
+	c, err := charger.New(s.chargerConfig(m.Member, saved))
+	if err != nil {
+		return err
+	}
+
+	ctx, cancel := context.WithCancel(s.ctx)
+	done := make(chan struct{})
+	m.charger, m.cancel, m.done = c, cancel, done
+	s.powered++
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		_ = c.Run(ctx)
+		cancel()
+
+		s.mu.Lock()
+		if m.charger == c {
+			m.charger = nil
+		}
+		s.powered--
+		s.checkIdle()
+		s.mu.Unlock()
+		close(done)
+	}()
 	return nil
 }
+
+// checkIdle notes when nothing is powered any more. The caller holds s.mu.
+func (s *Site) checkIdle() {
+	if s.powered == 0 && s.holds == 0 {
+		s.idleOnce.Do(func() { close(s.idle) })
+	}
+}
+
+// Start powers a charger on.
+func (s *Site) Start(id string) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	m := s.members[id]
+	switch {
+	case m == nil:
+		return "", errNoCharger
+	case m.charger != nil:
+		return "already running", nil
+	}
+	if err := s.power(m); err != nil {
+		return "", err
+	}
+	return "started", nil
+}
+
+// Stop shuts a charger down in an orderly way and waits until it is off.
+func (s *Site) Stop(id string) (string, error) {
+	s.mu.Lock()
+	m := s.members[id]
+	if m == nil {
+		s.mu.Unlock()
+		return "", errNoCharger
+	}
+	if m.charger == nil {
+		s.mu.Unlock()
+		return "already stopped", nil
+	}
+	cancel, done := m.cancel, m.done
+	s.mu.Unlock()
+
+	cancel()
+	<-done
+	return "stopped", nil
+}
+
+// Kill cuts a charger's power.
+func (s *Site) Kill(id string) (string, error) {
+	s.mu.Lock()
+	m := s.members[id]
+	if m == nil {
+		s.mu.Unlock()
+		return "", errNoCharger
+	}
+	if m.charger == nil {
+		s.mu.Unlock()
+		return "", errors.New("the charger is not running")
+	}
+	c, done := m.charger, m.done
+	s.mu.Unlock()
+
+	c.Kill()
+	<-done
+	return "killed", nil
+}
+
+// Restart stops a charger and starts it again.
+func (s *Site) Restart(id string) (string, error) {
+	// Keep the site alive while its only charger is off for a moment.
+	s.mu.Lock()
+	s.holds++
+	s.mu.Unlock()
+	defer func() {
+		s.mu.Lock()
+		s.holds--
+		s.checkIdle()
+		s.mu.Unlock()
+	}()
+
+	if _, err := s.Stop(id); err != nil {
+		return "", err
+	}
+	if _, err := s.Start(id); err != nil {
+		return "", err
+	}
+	return "restarted", nil
+}
+
+// Remove takes a charger out of the site and wipes its saved state. A
+// charger that is powered on is refused unless force is set, which stops it
+// first.
+func (s *Site) Remove(id string, force bool) (string, error) {
+	s.mu.Lock()
+	m := s.members[id]
+	if m == nil {
+		s.mu.Unlock()
+		return "", errNoCharger
+	}
+	if m.charger != nil && !force {
+		s.mu.Unlock()
+		return "", errors.New("the charger is running; stop it first, or use -f")
+	}
+	s.mu.Unlock()
+
+	if _, err := s.Stop(id); err != nil {
+		return "", err
+	}
+
+	s.mu.Lock()
+	delete(s.members, id)
+	s.mu.Unlock()
+	if s.cfg.Store != nil {
+		if err := s.cfg.Store.Remove(id); err != nil {
+			return "", err
+		}
+	}
+	return "removed", nil
+}
+
+var errNoCharger = errors.New("no such charger in this site")
 
 // NewPacer returns a function that spaces out connection attempts to at most
 // perSecond a second across every charger that shares it. It returns nil

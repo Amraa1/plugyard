@@ -15,6 +15,7 @@ We chose this because it is the only option that gives the same `-d` on all thre
 ## Consequences
 
 - The background process has no terminal, so what it would print goes to a log file beside the site's socket in the data directory. If it fails to start, `site up -d` shows the end of that file.
+- The background copy is told only the site's name and runs it from saved state, so `site up -d`, `site start` and `plugyard start` on a stopped site all start it the same way. Whatever the command decided, such as which chargers to power on, is written to saved state first.
 - Nothing restarts the process if it crashes.
 - The site ends when the user signs out, on Windows and macOS always and on Linux where the system is set to end user processes at logout. This matches the rule that sites do not start by themselves after a reboot.
 - `plugyard site down` asks the process to shut down over its socket, since there is no terminal to press Ctrl+C in.

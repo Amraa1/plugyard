@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -159,12 +160,12 @@ func TestSiteUpRunsEveryChargerUntilSiteDown(t *testing.T) {
 	if lines := strings.Count(ps, "\n"); lines != 6 {
 		t.Errorf("ps printed %d lines, want a header and 5 chargers:\n%s", lines, ps)
 	}
-	if !strings.Contains(ps, "FAST-03          depot  online      1:Available") {
+	if !regexp.MustCompile(`(?m)^FAST-03 +[a-z]+_[a-z]+ +depot  online      1:Available$`).MatchString(ps) {
 		t.Errorf("ps does not list FAST-03 in site depot:\n%s", ps)
 	}
 
 	code, ls, _ := run("site", "ls")
-	wantLs := fmt.Sprintf("SITE   CHARGERS  PROCESS  CSMS\ndepot  5         %-7d  %s\n", os.Getpid(), csms.URL())
+	wantLs := fmt.Sprintf("SITE   STATUS   CHARGERS  PROCESS  CSMS\ndepot  running  5         %-7d  %s\n", os.Getpid(), csms.URL())
 	if code != ExitOK || ls != wantLs {
 		t.Errorf("site ls printed:\n%s\nwant:\n%s", ls, wantLs)
 	}
@@ -205,9 +206,18 @@ func TestSiteUpRunsEveryChargerUntilSiteDown(t *testing.T) {
 		t.Errorf("ps still lists chargers after site down:\n%s", ps)
 	}
 
+	// The site is down but its state is kept until it is reset.
+	code, ls, _ = run("site", "ls", "-a")
+	if code != ExitOK || !regexp.MustCompile(`depot +down +5 +- `).MatchString(ls) {
+		t.Errorf("site ls -a after site down printed:\n%s", ls)
+	}
+	code, down, stderr = run("site", "down", "-s", "depot", "--reset")
+	if code != ExitOK || down != "Site depot is down and its saved state is wiped\n" {
+		t.Errorf("site down --reset: exit %d, stdout %q, stderr %q", code, down, stderr)
+	}
 	code, _, stderr = run("site", "down", "-s", "depot")
-	if code != ExitFailure || !strings.Contains(stderr, `site "depot" is not running`) {
-		t.Errorf("site down when not running: exit %d, stderr %q", code, stderr)
+	if code != ExitFailure || !strings.Contains(stderr, `site "depot" is not running and has no saved state`) {
+		t.Errorf("site down with nothing left: exit %d, stderr %q", code, stderr)
 	}
 }
 

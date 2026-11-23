@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"path"
 	"sort"
 	"strings"
 
@@ -31,8 +30,8 @@ func newExec() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "exec <charger> <action> [arguments]",
 		Short: "Run an action on running chargers",
-		Long: "Run an action on one charger, or on every charger matching a pattern such\n" +
-			"as 'FAST-*'. One line is printed per charger saying whether the action was\n" +
+		Long: "Run an action on one charger, named by its charge point ID or its name, or\n" +
+			"on every charger matching a pattern such as 'FAST-*'. One line is printed per charger saying whether the action was\n" +
 			"carried out and, if not, why.\n\n" +
 			"Actions:\n" +
 			"  plug           Plug an EV into the connector\n" +
@@ -47,8 +46,8 @@ func newExec() *cobra.Command {
 				return err
 			}
 			pattern, action, rest := args[0], args[1], args[2:]
-			if _, err := path.Match(pattern, ""); err != nil {
-				return &UsageError{Err: fmt.Errorf("invalid charger pattern %q", pattern)}
+			if err := checkPattern(pattern); err != nil {
+				return err
 			}
 			if connector < 1 {
 				return &UsageError{Err: errors.New("the connector number must be 1 or more")}
@@ -91,44 +90,45 @@ func newExec() *cobra.Command {
 				return &UsageError{Err: errors.New("--ev, --battery, --soc, --max-power, --target-soc and --curve only apply to plug")}
 			}
 
-			sites, err := runningSites(cmd.Context(), siteName)
+			w, err := loadWorld(cmd.Context(), siteName)
 			if err != nil {
 				return err
 			}
-			defer closeSites(sites)
+			defer w.close()
 
-			// Work out which chargers the argument names, site by site.
-			type target struct {
-				site runningSite
-				ids  []string
+			// Actions need a charger that is powered on.
+			matched, err := w.match(pattern, func(t target) bool { return t.state.Powered })
+			if err != nil {
+				return err
 			}
-			var targets []target
-			var matchedSites []string
-			total := 0
-			for _, s := range sites {
-				var ids []string
-				for _, c := range s.chargers {
-					if ok, _ := path.Match(pattern, c.ChargePointID); ok {
-						ids = append(ids, c.ChargePointID)
-					}
+			if len(matched) == 0 {
+				if stopped, _ := w.match(pattern, nil); len(stopped) > 0 && !isPattern(pattern) {
+					return fmt.Errorf("charger %q is stopped; start it with \"plugyard start %s\"", pattern, pattern)
 				}
-				if len(ids) > 0 {
-					targets = append(targets, target{site: s, ids: ids})
-					matchedSites = append(matchedSites, s.client.Info.Site)
-					total += len(ids)
-				}
-			}
-			if total == 0 {
 				return fmt.Errorf("no running charger matches %q", pattern)
 			}
-			if !strings.ContainsAny(pattern, `*?[\`) && total > 1 {
-				return fmt.Errorf("charger %q runs in sites %s; choose one with -s", pattern, strings.Join(matchedSites, " and "))
+
+			// Work out which chargers the argument names, site by site.
+			type group struct {
+				client *control.Client
+				ids    []string
+			}
+			var targets []*group
+			bySite := map[string]*group{}
+			for _, t := range matched {
+				g := bySite[t.state.Site]
+				if g == nil {
+					g = &group{client: t.client}
+					bySite[t.state.Site] = g
+					targets = append(targets, g)
+				}
+				g.ids = append(g.ids, t.state.ChargePointID)
 			}
 
 			var results []control.ExecResult
 			for _, t := range targets {
 				req.ChargePointIDs = t.ids
-				got, err := t.site.client.Exec(cmd.Context(), req)
+				got, err := t.client.Exec(cmd.Context(), req)
 				if err != nil {
 					// The whole site failed to answer: every charger in it
 					// gets the reason.
@@ -136,7 +136,7 @@ func newExec() *cobra.Command {
 						got = append(got, control.ExecResult{
 							ChargePointID: id,
 							Connector:     connector,
-							Message:       fmt.Sprintf("site %q did not answer: %v", t.site.client.Info.Site, err),
+							Message:       fmt.Sprintf("site %q did not answer: %v", t.client.Info.Site, err),
 						})
 					}
 				}
@@ -231,12 +231,12 @@ func writeExecResults(w io.Writer, results []control.ExecResult, failed int) {
 		if !r.OK {
 			outcome = cell{plain: "failed", rendered: p.red("failed")}
 		}
-		rows = append(rows, []cell{
-			{plain: r.ChargePointID, rendered: p.bold(r.ChargePointID)},
-			plain(fmt.Sprintf("connector %d", r.Connector)),
-			outcome,
-			plain(r.Message),
-		})
+		row := []cell{{plain: r.ChargePointID, rendered: p.bold(r.ChargePointID)}}
+		// An operation on the whole charger names no connector.
+		if r.Connector != 0 {
+			row = append(row, plain(fmt.Sprintf("connector %d", r.Connector)))
+		}
+		rows = append(rows, append(row, outcome, plain(r.Message)))
 	}
 	writeTable(w, rows)
 

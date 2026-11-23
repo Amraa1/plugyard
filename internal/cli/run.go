@@ -11,7 +11,8 @@ import (
 	"github.com/Amraa1/plugyard/internal/charger"
 	"github.com/Amraa1/plugyard/internal/datadir"
 	"github.com/Amraa1/plugyard/internal/model"
-	"github.com/Amraa1/plugyard/internal/site"
+	"github.com/Amraa1/plugyard/internal/names"
+	"github.com/Amraa1/plugyard/internal/store"
 )
 
 // passwordEnv is read when --password is not given, so that the password
@@ -25,6 +26,9 @@ func newRun() *cobra.Command {
 		password           string
 		insecureSkipVerify bool
 		speed              float64
+		name               string
+		remove             bool
+		yes                bool
 	)
 
 	cmd := &cobra.Command{
@@ -32,6 +36,9 @@ func newRun() *cobra.Command {
 		Short: "Start one charger without a site file",
 		Long: "Start one charger from a Chargerfile and keep it running in the foreground,\n" +
 			"printing its events and OCPP messages. Press Ctrl+C to shut it down.\n\n" +
+			"The charger's state is saved: running the same charge point ID again brings\n" +
+			"back the same charger, with its meter and configuration, and \"plugyard rm\"\n" +
+			"wipes it. With --rm nothing is saved.\n\n" +
 			"The charge point ID is appended to the CSMS URL: with --csms ws://host/ocpp\n" +
 			"and --id CP-1 the charger connects to ws://host/ocpp/CP-1.",
 		Example: "  plugyard run Chargerfile --csms ws://localhost:9000/ocpp --id CP-1",
@@ -46,37 +53,49 @@ func newRun() *cobra.Command {
 				password = os.Getenv(passwordEnv)
 			}
 
-			c, err := charger.New(charger.Config{
-				ID:    id,
-				Model: m,
-				CSMS: charger.CSMS{
-					URL:                csmsURL,
-					Password:           password,
-					InsecureSkipVerify: insecureSkipVerify,
-				},
-				Speed: speed,
-				Log:   newLogPrinter(cmd.OutOrStdout()),
-			})
-			if err != nil {
+			csms := charger.CSMS{URL: csmsURL, Password: password, InsecureSkipVerify: insecureSkipVerify}
+			if _, err := charger.New(charger.Config{ID: id, Model: m, CSMS: csms, Speed: speed}); err != nil {
 				return &UsageError{Err: err}
+			}
+			if name != "" {
+				if err := names.Validate(name); err != nil {
+					return &UsageError{Err: fmt.Errorf("--name: %w", err)}
+				}
 			}
 
 			// A charger started with run lives in an implicit site named
 			// after its charge point ID. Serving the site's socket is what
-			// lets ps and exec reach it from another terminal.
+			// lets ps and exec reach it from another terminal, and its saved
+			// state is what brings the same charger back on the next run.
 			dir, err := datadir.Path()
 			if err != nil {
 				return err
 			}
-			s := site.New(id, c)
-			s.SetCSMS([]string{csmsURL})
-			return serveSite(cmd.Context(), dir, s)
+			meta := store.Meta{Name: id, Implicit: true, Speed: speed}
+			want := []desired{{
+				ID:   id,
+				Name: name,
+				Spec: store.Spec{
+					Model:              m,
+					CSMSURL:            csmsURL,
+					InsecureSkipVerify: insecureSkipVerify,
+					HasPassword:        password != "",
+				},
+			}}
+			st, err := prepare(cmd.Context(), cmd, dir, meta, want, yes, remove)
+			if err != nil {
+				return err
+			}
+			return serveSaved(cmd.Context(), dir, st, cmd.OutOrStdout(), func(string) string { return password })
 		},
 	}
 
 	flags := cmd.Flags()
 	flags.StringVar(&csmsURL, "csms", "", "CSMS URL, ws:// or wss:// (required)")
 	flags.StringVar(&id, "id", "", "charge point ID (required)")
+	flags.StringVar(&name, "name", "", "name for the charger, unique on this machine (default: one is made up)")
+	flags.BoolVar(&remove, "rm", false, "save nothing: the charger leaves no trace when it stops")
+	flags.BoolVarP(&yes, "yes", "y", false, "reset saved state that no longer fits the Chargerfile, without asking")
 	flags.Float64Var(&speed, "speed", 1, "multiply the rate of EV charging and energy accumulation")
 	flags.StringVar(&password, "password", "", "password for HTTP Basic authentication; defaults to $"+passwordEnv)
 	flags.BoolVar(&insecureSkipVerify, "insecure-skip-verify", false, "do not verify the CSMS's TLS certificate")

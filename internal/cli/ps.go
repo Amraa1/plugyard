@@ -1,17 +1,14 @@
 package cli
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"io"
-	"sort"
 	"strings"
 
 	"github.com/spf13/cobra"
 
 	"github.com/Amraa1/plugyard/internal/control"
-	"github.com/Amraa1/plugyard/internal/datadir"
 )
 
 const (
@@ -31,49 +28,6 @@ func checkFormat(format string) error {
 	return nil
 }
 
-// runningSite is a running site and the state of its chargers.
-type runningSite struct {
-	client   *control.Client
-	chargers []control.ChargerState
-}
-
-// runningSites finds the running sites, narrowed to one site when siteName
-// is given, and reads the state of their chargers. The caller closes the
-// clients.
-func runningSites(ctx context.Context, siteName string) ([]runningSite, error) {
-	dir, err := datadir.Path()
-	if err != nil {
-		return nil, err
-	}
-	clients, err := control.Discover(ctx, dir)
-	if err != nil {
-		return nil, err
-	}
-
-	var sites []runningSite
-	for _, client := range clients {
-		if siteName != "" && client.Info.Site != siteName {
-			client.Close()
-			continue
-		}
-		chargers, err := client.Chargers(ctx)
-		if err != nil {
-			return nil, fmt.Errorf("site %q did not answer: %w", client.Info.Site, err)
-		}
-		sites = append(sites, runningSite{client: client, chargers: chargers})
-	}
-	if siteName != "" && len(sites) == 0 {
-		return nil, fmt.Errorf("no running site is named %q", siteName)
-	}
-	return sites, nil
-}
-
-func closeSites(sites []runningSite) {
-	for _, s := range sites {
-		s.client.Close()
-	}
-}
-
 func newPs() *cobra.Command {
 	var (
 		all      bool
@@ -84,29 +38,26 @@ func newPs() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "ps",
 		Short: "List running chargers",
-		Long: "List running chargers with their site, connection state and the status of\n" +
-			"each connector.",
+		Long: "List running chargers with their name, site, connection state and the\n" +
+			"status of each connector. With -a, stopped chargers are listed too, with\n" +
+			"the status each connector will report when the charger starts.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if err := checkFormat(format); err != nil {
 				return err
 			}
-			sites, err := runningSites(cmd.Context(), siteName)
+			w, err := loadWorld(cmd.Context(), siteName)
 			if err != nil {
 				return err
 			}
-			defer closeSites(sites)
+			defer w.close()
 
-			var chargers []control.ChargerState
-			for _, s := range sites {
-				chargers = append(chargers, s.chargers...)
-			}
-			sort.SliceStable(chargers, func(i, j int) bool {
-				if chargers[i].ChargePointID != chargers[j].ChargePointID {
-					return chargers[i].ChargePointID < chargers[j].ChargePointID
+			chargers := []control.ChargerState{}
+			for _, t := range w.targets {
+				if all || t.state.Powered {
+					chargers = append(chargers, t.state)
 				}
-				return chargers[i].Site < chargers[j].Site
-			})
+			}
 
 			out := cmd.OutOrStdout()
 			if format == formatJSON {
@@ -117,8 +68,6 @@ func newPs() *cobra.Command {
 		},
 	}
 
-	// Stopped chargers need saved state, which does not exist yet; the flag
-	// is accepted so that scripts written against the spec keep working.
 	cmd.Flags().BoolVarP(&all, "all", "a", false, "include stopped chargers")
 	cmd.Flags().StringVarP(&siteName, "site", "s", "", "only show chargers of this site")
 	addFormatFlag(cmd, &format)
@@ -128,7 +77,7 @@ func newPs() *cobra.Command {
 func writePsTable(w io.Writer, chargers []control.ChargerState) {
 	p := newPalette(w)
 	rows := [][]cell{{
-		plain("CHARGE POINT ID"), plain("SITE"), plain("CONNECTION"), plain("CONNECTORS"),
+		plain("CHARGE POINT ID"), plain("NAME"), plain("SITE"), plain("CONNECTION"), plain("CONNECTORS"),
 	}}
 	for _, c := range chargers {
 		var plainParts, coloredParts []string
@@ -138,6 +87,7 @@ func writePsTable(w io.Writer, chargers []control.ChargerState) {
 		}
 		rows = append(rows, []cell{
 			plain(c.ChargePointID),
+			plain(c.Name),
 			plain(c.Site),
 			{plain: c.Connection, rendered: p.connection(c.Connection)},
 			{plain: strings.Join(plainParts, " "), rendered: strings.Join(coloredParts, " ")},

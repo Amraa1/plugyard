@@ -59,6 +59,12 @@ type Config struct {
 	// Log, if set, receives the charger's events and OCPP messages. It is
 	// called from several goroutines and must not block.
 	Log func(Entry)
+	// Restore, if set, is the state saved when the charger last had power.
+	Restore *State
+	// Save, if set, is given the charger's state whenever something worth
+	// keeping has changed: at once for transactions and queued messages, and
+	// every MeterSaveInterval seconds for meter readings.
+	Save func(State) error
 }
 
 // EntryKind tells the kinds of log entry apart.
@@ -88,6 +94,7 @@ const (
 	defaultHeartbeatInterval = 300 * time.Second
 	defaultBootRetryInterval = 30 * time.Second
 	defaultTick              = time.Second
+	defaultMeterSaveInterval = 5 * time.Second
 )
 
 // Connection states, as shown by "plugyard ps".
@@ -106,13 +113,24 @@ var defaultConfig = map[string]string{
 	"MeterValuesSampledData":     v16.MeasurandEnergy + "," + v16.MeasurandPower,
 	"StopTxnSampledData":         v16.MeasurandEnergy,
 	"StopTransactionOnInvalidId": "true",
+	// MeterSaveInterval is plugyard's own key: how often, in seconds, meter
+	// readings are saved to disk during a transaction. It bounds the energy a
+	// power cut loses from the reported meterStop.
+	"MeterSaveInterval": "5",
 }
 
-// Charger is one simulated charger.
+// Charger is one simulated charger. It is powered on once, with Run; a
+// charger that has been powered off is replaced by a new one made from its
+// saved state.
 type Charger struct {
 	cfg    Config
 	url    string
 	config map[string]string // OCPP configuration keys
+	// overrides holds the configuration keys the CSMS changed.
+	overrides map[string]string
+	// recovered describes what restoring the saved state brought to light,
+	// to be logged when the charger is powered on.
+	recovered []string
 
 	// wake tells the connection that the outbox has something to send.
 	wake chan struct{}
@@ -122,18 +140,33 @@ type Charger struct {
 	conn       *ocppj.Conn // set while the CSMS has accepted the charger
 	connectors []*connector
 	outbox     []*outMsg
+	// unconfirmed holds, by reference, the transactions whose
+	// StartTransaction the CSMS has not answered yet.
+	unconfirmed map[int]*transaction
+	nextTxRef   int
+
+	// cut ends Run. killed says the end is a power cut, and off that the
+	// charger has no power any more.
+	cut    func()
+	killed bool
+	off    bool
+	// dirty says the state has changed since it was last saved.
+	dirty    bool
+	nextSave time.Time
 }
 
 // outMsg is a message waiting to be sent to the CSMS. Messages are sent one
 // at a time, in order, and stay queued while the charger is not connected.
 type outMsg struct {
 	action string
-	// build returns the payload. It runs just before sending, so that it can
-	// use values learned from earlier answers, such as a transaction ID.
-	build func() any
-	// done, if set, is given the answer, or nil if the CSMS answered with an
-	// error.
-	done func(result json.RawMessage)
+	// req points to the request.
+	req any
+	// txRef, when not zero, names a transaction whose ID the request needs
+	// and the CSMS has not given yet. The ID is filled in when it arrives.
+	txRef int
+	// volatile messages are not saved: they describe a moment, and are sent
+	// afresh after the next boot.
+	volatile bool
 }
 
 // New checks cfg and returns a charger that has not been powered on yet.
@@ -177,11 +210,13 @@ func New(cfg Config) (*Charger, error) {
 	}
 
 	c := &Charger{
-		cfg:        cfg,
-		url:        u.JoinPath(url.PathEscape(cfg.ID)).String(),
-		config:     map[string]string{},
-		wake:       make(chan struct{}, 1),
-		connection: Connecting,
+		cfg:         cfg,
+		url:         u.JoinPath(url.PathEscape(cfg.ID)).String(),
+		config:      map[string]string{},
+		overrides:   map[string]string{},
+		unconfirmed: map[int]*transaction{},
+		wake:        make(chan struct{}, 1),
+		connection:  Connecting,
 	}
 	for key, value := range defaultConfig {
 		c.config[key] = value
@@ -196,6 +231,9 @@ func New(cfg Config) (*Charger, error) {
 			status:   v16.StatusAvailable,
 		})
 	}
+	if cfg.Restore != nil {
+		c.restore(cfg.Restore)
+	}
 	return c, nil
 }
 
@@ -207,10 +245,31 @@ func (c *Charger) ID() string { return c.cfg.ID }
 func (c *Charger) URL() string { return c.url }
 
 // Run powers the charger on and keeps it running until ctx is cancelled,
-// which shuts it down in an orderly way. While running, the charger
-// reconnects by itself whenever the connection is lost.
+// which shuts it down in an orderly way, or until Kill cuts its power. While
+// running, the charger reconnects by itself whenever the connection is lost.
+// A charger can be powered on only once.
 func (c *Charger) Run(ctx context.Context) error {
+	ctx, cut := context.WithCancel(ctx)
+	defer cut()
+
+	c.mu.Lock()
+	if c.cut != nil || c.off {
+		c.mu.Unlock()
+		return errors.New("the charger has already been powered on once")
+	}
+	c.cut = cut
+	if c.killed {
+		cut()
+	}
+	// Save what restoring brought: a transaction ended by a power loss must
+	// not be found open again.
+	c.dirty = true
+	c.unlock()
+
 	c.event("powered on")
+	for _, line := range c.recovered {
+		c.event("%s", line)
+	}
 	wait := c.cfg.Timing.ReconnectMin
 
 	// The EVs keep charging whether or not the CSMS is reachable.
@@ -221,11 +280,11 @@ func (c *Charger) Run(ctx context.Context) error {
 		c.simulate(ctx)
 	}()
 	defer simulation.Wait()
+	defer c.powerOff()
 
 	for {
 		connected, err := c.session(ctx)
 		if ctx.Err() != nil {
-			c.event("powered off")
 			return nil
 		}
 		if connected {
@@ -243,11 +302,59 @@ func (c *Charger) Run(ctx context.Context) error {
 		pause := wait + time.Duration(rand.Int64N(int64(wait)/4+1))
 		c.event("retrying in %s", pause.Round(time.Millisecond))
 		if !sleep(ctx, pause) {
-			c.event("powered off")
 			return nil
 		}
 		wait = min(wait*2, c.cfg.Timing.ReconnectMax)
 	}
+}
+
+// Kill cuts the charger's power: Run returns at once, the connection drops
+// with no message, and nothing that happened since the last save is kept.
+func (c *Charger) Kill() {
+	c.mu.Lock()
+	c.killed = true
+	cut, conn := c.cut, c.conn
+	c.mu.Unlock()
+	if cut != nil {
+		cut()
+	}
+	if conn != nil {
+		// Do not wait for an answer that is on its way.
+		conn.Drop()
+	}
+}
+
+// errOff is returned by actions on a charger that has no power.
+var errOff = errors.New("the charger is stopped")
+
+func (c *Charger) isKilled() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.killed
+}
+
+// powerOff is the last thing Run does.
+func (c *Charger) powerOff() {
+	c.mu.Lock()
+	if c.killed {
+		c.off = true
+		c.mu.Unlock()
+		c.event("power cut")
+		return
+	}
+	// An orderly shutdown ends the transactions even when the CSMS cannot be
+	// told now: the messages stay queued and are sent after the next boot.
+	for _, k := range c.connectors {
+		if k.tx != nil {
+			c.stopTx(k, v16.ReasonOther, k.tx.idTag)
+			c.reportStatus(k)
+		}
+	}
+	c.dirty = true
+	c.flush()
+	c.off = true
+	c.mu.Unlock()
+	c.event("powered off")
 }
 
 // session runs one connection from dial to disconnect. It reports whether
@@ -277,7 +384,7 @@ func (c *Charger) session(ctx context.Context) (connected bool, err error) {
 	}
 
 	defer func() {
-		if ctx.Err() != nil {
+		if ctx.Err() != nil && !c.isKilled() {
 			// Orderly shutdown: say goodbye properly.
 			_ = conn.Close()
 			c.event("disconnected")
@@ -315,6 +422,9 @@ func (c *Charger) session(ctx context.Context) (connected bool, err error) {
 		}
 		select {
 		case <-ctx.Done():
+			if c.isKilled() {
+				return true, ctx.Err()
+			}
 			// Orderly shutdown: end the transactions and tell the CSMS
 			// before leaving.
 			c.mu.Lock()
@@ -324,7 +434,7 @@ func (c *Charger) session(ctx context.Context) (connected bool, err error) {
 					c.reportStatus(k)
 				}
 			}
-			c.mu.Unlock()
+			c.unlock()
 			_ = c.drain(conn)
 			return true, ctx.Err()
 		case <-conn.Done():
@@ -350,8 +460,10 @@ func (c *Charger) drain(conn *ocppj.Conn) error {
 		m := c.outbox[0]
 		c.mu.Unlock()
 
+		// The request is only changed by this goroutine, after an answer, so
+		// it can be read here without the lock.
 		var result json.RawMessage
-		err := c.call(context.Background(), conn, m.action, m.build(), &result)
+		err := c.call(context.Background(), conn, m.action, m.req, &result)
 		var callErr *ocppj.CallError
 		switch {
 		case errors.As(err, &callErr):
@@ -362,17 +474,26 @@ func (c *Charger) drain(conn *ocppj.Conn) error {
 		}
 
 		c.mu.Lock()
-		c.outbox = c.outbox[1:]
-		c.mu.Unlock()
-		if m.done != nil {
-			m.done(result)
+		// A power cut may have come while the CSMS was answering.
+		if len(c.outbox) > 0 && c.outbox[0] == m {
+			c.outbox = c.outbox[1:]
 		}
+		if m.action == v16.ActionStartTransaction {
+			c.startAnswered(m, result)
+		}
+		if !m.volatile {
+			c.dirty = true
+		}
+		c.unlock()
 	}
 }
 
 // enqueue adds a message to the outbox. The caller holds c.mu.
 func (c *Charger) enqueue(m *outMsg) {
 	c.outbox = append(c.outbox, m)
+	if !m.volatile {
+		c.dirty = true
+	}
 	select {
 	case c.wake <- struct{}{}:
 	default:

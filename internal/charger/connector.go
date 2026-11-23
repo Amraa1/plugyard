@@ -41,6 +41,9 @@ type connector struct {
 }
 
 type transaction struct {
+	// ref identifies the transaction inside the charger. Messages queued
+	// before the CSMS has given the transaction an ID carry it instead.
+	ref int
 	// id is the transaction ID given by the CSMS. It is zero until the CSMS
 	// has answered StartTransaction; confirmed is closed at that point.
 	id        int
@@ -157,13 +160,16 @@ func (c *Charger) reportStatus(k *connector) {
 // it is now. The caller holds c.mu.
 func (c *Charger) enqueueStatus(k *connector) {
 	now := v16.Time{Time: time.Now()}
-	req := v16.StatusNotificationRequest{
-		ConnectorID: k.id,
-		ErrorCode:   v16.ErrorCodeNoError,
-		Status:      k.status,
-		Timestamp:   &now,
-	}
-	c.enqueue(&outMsg{action: v16.ActionStatusNotification, build: func() any { return req }})
+	c.enqueue(&outMsg{
+		action: v16.ActionStatusNotification,
+		req: &v16.StatusNotificationRequest{
+			ConnectorID: k.id,
+			ErrorCode:   v16.ErrorCodeNoError,
+			Status:      k.status,
+			Timestamp:   &now,
+		},
+		volatile: true,
+	})
 }
 
 // Plug plugs an EV into a connector. It returns a description of what
@@ -174,6 +180,10 @@ func (c *Charger) Plug(ctx context.Context, connectorID int, params ev.Params) (
 	}
 
 	c.mu.Lock()
+	if c.off {
+		c.mu.Unlock()
+		return "", errOff
+	}
 	k, err := c.connector(connectorID)
 	if err != nil {
 		c.mu.Unlock()
@@ -186,6 +196,7 @@ func (c *Charger) Plug(ctx context.Context, connectorID int, params ev.Params) (
 
 	k.ev = ev.New(params)
 	k.finishing = false
+	c.dirty = true
 	outcome := fmt.Sprintf("EV plugged in (%s kWh, %.0f%%)",
 		strconv.FormatFloat(params.BatteryWh/1000, 'f', -1, 64), params.SoC*100)
 	c.event("connector %d: %s", k.id, outcome)
@@ -202,7 +213,7 @@ func (c *Charger) Plug(ctx context.Context, connectorID int, params ev.Params) (
 		tx = c.startTx(k, c.cfg.Model.StartTag, "")
 	}
 	c.reportStatus(k)
-	c.mu.Unlock()
+	c.unlock()
 
 	if tx != nil {
 		outcome += ", " + c.awaitStart(ctx, k, tx)
@@ -214,8 +225,11 @@ func (c *Charger) Plug(ctx context.Context, connectorID int, params ev.Params) (
 // is one.
 func (c *Charger) Unplug(connectorID int) (string, error) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
+	defer c.unlock()
 
+	if c.off {
+		return "", errOff
+	}
 	k, err := c.connector(connectorID)
 	if err != nil {
 		return "", err
@@ -223,6 +237,7 @@ func (c *Charger) Unplug(connectorID int) (string, error) {
 	if k.ev == nil {
 		return "", errors.New("the connector has no EV")
 	}
+	c.dirty = true
 
 	outcome := "EV unplugged"
 	if k.tx != nil {
@@ -249,6 +264,10 @@ func (c *Charger) Tap(ctx context.Context, connectorID int, tag string) (string,
 	}
 
 	c.mu.Lock()
+	if c.off {
+		c.mu.Unlock()
+		return "", errOff
+	}
 	k, err := c.connector(connectorID)
 	if err != nil {
 		c.mu.Unlock()
@@ -261,7 +280,7 @@ func (c *Charger) Tap(ctx context.Context, connectorID int, tag string) (string,
 		// ask the CSMS.
 		outcome := c.stopTx(k, v16.ReasonLocal, tag)
 		c.reportStatus(k)
-		c.mu.Unlock()
+		c.unlock()
 		return outcome, nil
 	case running == nil && k.finishing:
 		c.mu.Unlock()
@@ -285,7 +304,7 @@ func (c *Charger) Tap(ctx context.Context, connectorID int, tag string) (string,
 	}
 
 	if running != nil {
-		defer c.mu.Unlock()
+		defer c.unlock()
 		if info.Status != v16.AuthorizationAccepted {
 			return fmt.Sprintf("tag rejected by the CSMS (%s), transaction continues", info.Status), nil
 		}
@@ -328,7 +347,7 @@ func (c *Charger) Tap(ctx context.Context, connectorID int, tag string) (string,
 
 	tx := c.startTx(k, tag, info.ParentIDTag)
 	c.reportStatus(k)
-	c.mu.Unlock()
+	c.unlock()
 	return "tag accepted, " + c.awaitStart(ctx, k, tx), nil
 }
 
@@ -351,7 +370,9 @@ func (c *Charger) authorize(ctx context.Context, tag string) (v16.IDTagInfo, err
 // startTx starts a transaction on a connector. The caller holds c.mu.
 func (c *Charger) startTx(k *connector, tag, parent string) *transaction {
 	now := time.Now()
+	c.nextTxRef++
 	tx := &transaction{
+		ref:         c.nextTxRef,
 		confirmed:   make(chan struct{}),
 		idTag:       tag,
 		parentIDTag: parent,
@@ -364,40 +385,76 @@ func (c *Charger) startTx(k *connector, tag, parent string) *transaction {
 	k.finishing = false
 	k.advanced = now
 
-	req := v16.StartTransactionRequest{
-		ConnectorID: k.id,
-		IDTag:       tag,
-		MeterStart:  int(k.meterWh),
-		Timestamp:   v16.Time{Time: now},
-	}
+	c.unconfirmed[tx.ref] = tx
 	c.enqueue(&outMsg{
 		action: v16.ActionStartTransaction,
-		build:  func() any { return req },
-		done: func(result json.RawMessage) {
-			c.mu.Lock()
-			defer c.mu.Unlock()
-			defer close(tx.confirmed)
-
-			var resp v16.StartTransactionResponse
-			if result == nil || json.Unmarshal(result, &resp) != nil {
-				return
-			}
-			tx.id = resp.TransactionID
-			if resp.IDTagInfo.ParentIDTag != "" {
-				tx.parentIDTag = resp.IDTagInfo.ParentIDTag
-			}
-			c.event("connector %d: the CSMS confirmed transaction %d", k.id, tx.id)
-
-			rejected := resp.IDTagInfo.Status != v16.AuthorizationAccepted
-			if rejected && k.tx == tx && c.config["StopTransactionOnInvalidId"] != "false" {
-				c.event("connector %d: the CSMS rejected tag %s at StartTransaction (%s)", k.id, tag, resp.IDTagInfo.Status)
-				c.stopTx(k, v16.ReasonDeAuthorized, tag)
-				c.reportStatus(k)
-			}
+		req: &v16.StartTransactionRequest{
+			ConnectorID: k.id,
+			IDTag:       tag,
+			MeterStart:  int(k.meterWh),
+			Timestamp:   v16.Time{Time: now},
 		},
+		txRef: tx.ref,
 	})
 	c.event("connector %d: transaction started with tag %s", k.id, tag)
 	return tx
+}
+
+// startAnswered takes in the CSMS's answer to a StartTransaction, or nil if
+// it answered with an error. The caller holds c.mu.
+func (c *Charger) startAnswered(m *outMsg, result json.RawMessage) {
+	tx := c.unconfirmed[m.txRef]
+	delete(c.unconfirmed, m.txRef)
+	if tx != nil {
+		defer close(tx.confirmed)
+	}
+
+	var resp v16.StartTransactionResponse
+	if result == nil || json.Unmarshal(result, &resp) != nil {
+		return
+	}
+
+	// Messages queued while the ID was unknown get it now.
+	for _, queued := range c.outbox {
+		if queued.txRef != m.txRef {
+			continue
+		}
+		queued.txRef = 0
+		switch req := queued.req.(type) {
+		case *v16.StopTransactionRequest:
+			req.TransactionID = resp.TransactionID
+		case *v16.MeterValuesRequest:
+			id := resp.TransactionID
+			req.TransactionID = &id
+		}
+	}
+
+	if tx == nil {
+		// The transaction is from before a power loss and is already over.
+		return
+	}
+	tx.id = resp.TransactionID
+	if resp.IDTagInfo.ParentIDTag != "" {
+		tx.parentIDTag = resp.IDTagInfo.ParentIDTag
+	}
+
+	var k *connector
+	for _, candidate := range c.connectors {
+		if candidate.tx == tx {
+			k = candidate
+		}
+	}
+	if k == nil {
+		return
+	}
+	c.event("connector %d: the CSMS confirmed transaction %d", k.id, tx.id)
+
+	rejected := resp.IDTagInfo.Status != v16.AuthorizationAccepted
+	if rejected && c.config["StopTransactionOnInvalidId"] != "false" {
+		c.event("connector %d: the CSMS rejected tag %s at StartTransaction (%s)", k.id, tx.idTag, resp.IDTagInfo.Status)
+		c.stopTx(k, v16.ReasonDeAuthorized, tx.idTag)
+		c.reportStatus(k)
+	}
 }
 
 // stopTx ends the connector's transaction and returns a description of what
@@ -421,25 +478,23 @@ func (c *Charger) stopTx(k *connector, reason, tag string) string {
 	k.powerW = 0
 	k.finishing = k.ev != nil
 
-	meterStop := int(k.meterWh)
-	c.enqueue(&outMsg{
+	m := &outMsg{
 		action: v16.ActionStopTransaction,
-		build: func() any {
-			// The transaction ID is read here, when sending, because the
-			// CSMS may not have answered StartTransaction when the
-			// transaction stopped.
-			c.mu.Lock()
-			defer c.mu.Unlock()
-			return v16.StopTransactionRequest{
-				IDTag:           tag,
-				MeterStop:       meterStop,
-				Timestamp:       v16.Time{Time: now},
-				TransactionID:   tx.id,
-				Reason:          reason,
-				TransactionData: data,
-			}
+		req: &v16.StopTransactionRequest{
+			IDTag:           tag,
+			MeterStop:       int(k.meterWh),
+			Timestamp:       v16.Time{Time: now},
+			TransactionID:   tx.id,
+			Reason:          reason,
+			TransactionData: data,
 		},
-	})
+	}
+	// The CSMS may not have answered StartTransaction yet: the ID is then
+	// filled in when it does.
+	if tx.id == 0 && c.startPending(tx.ref) {
+		m.txRef = tx.ref
+	}
+	c.enqueue(m)
 
 	if tx.id != 0 {
 		c.event("connector %d: transaction %d stopped (%s)", k.id, tx.id, reason)
@@ -510,7 +565,10 @@ func (c *Charger) advance(k *connector, now time.Time) {
 // reaching its target, or a meter sample falling due.
 func (c *Charger) tick(now time.Time) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
+	defer c.unlock()
+	if c.off || c.killed {
+		return
+	}
 
 	for _, k := range c.connectors {
 		tx := k.tx
@@ -518,12 +576,17 @@ func (c *Charger) tick(now time.Time) {
 			continue
 		}
 		c.advance(k, now)
+		// Meter readings are saved every MeterSaveInterval seconds.
+		if !now.Before(c.nextSave) {
+			c.dirty = true
+		}
 
 		if !tx.evFull && k.ev.Full() {
 			k.powerW = 0
 			c.event("connector %d: the EV reached its target", k.id)
 			if c.cfg.Model.OnEvFull == model.OnEvFullSuspend {
 				tx.evFull = true
+				c.dirty = true
 			} else {
 				c.stopTx(k, v16.ReasonOther, tx.idTag)
 			}
@@ -544,20 +607,16 @@ func (c *Charger) enqueueMeterValues(k *connector, tx *transaction, now time.Tim
 	if value == nil {
 		return
 	}
-	connectorID := k.id
-	c.enqueue(&outMsg{
-		action: v16.ActionMeterValues,
-		build: func() any {
-			c.mu.Lock()
-			defer c.mu.Unlock()
-			req := v16.MeterValuesRequest{ConnectorID: connectorID, MeterValue: []v16.MeterValue{*value}}
-			if tx.id != 0 {
-				id := tx.id
-				req.TransactionID = &id
-			}
-			return req
-		},
-	})
+	req := &v16.MeterValuesRequest{ConnectorID: k.id, MeterValue: []v16.MeterValue{*value}}
+	m := &outMsg{action: v16.ActionMeterValues, req: req}
+	switch {
+	case tx.id != 0:
+		id := tx.id
+		req.TransactionID = &id
+	case c.startPending(tx.ref):
+		m.txRef = tx.ref
+	}
+	c.enqueue(m)
 }
 
 // sample reads the given measurands from a connector. It returns nil when

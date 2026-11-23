@@ -17,6 +17,7 @@ import (
 	"github.com/Amraa1/plugyard/internal/charger"
 	"github.com/Amraa1/plugyard/internal/ev"
 	"github.com/Amraa1/plugyard/internal/model"
+	"github.com/Amraa1/plugyard/internal/names"
 )
 
 // DefaultName is the site file looked for when none is named.
@@ -51,6 +52,9 @@ type Entry struct {
 type Charger struct {
 	// ID is the charge point ID.
 	ID string
+	// Name is the name the file gives the charger, or empty to have one
+	// made up.
+	Name string
 	// Model is the charger's model, with the entry's configuration
 	// overrides applied.
 	Model *model.Model
@@ -94,6 +98,7 @@ type fileEV struct {
 
 type fileEntry struct {
 	Model  string         `yaml:"model"`
+	Name   string         `yaml:"name"`
 	Count  *int           `yaml:"count"`
 	ID     string         `yaml:"id"`
 	Start  *int           `yaml:"start"`
@@ -219,7 +224,8 @@ func Parse(data []byte, baseDir string, lookupEnv func(string) (string, bool)) (
 	}
 
 	models := map[string]*model.Model{}
-	seen := map[string]string{} // charge point ID -> entry that made it
+	seen := map[string]string{}      // charge point ID -> entry that made it
+	seenNames := map[string]string{} // charger name -> entry that gave it
 	for i := 0; i+1 < len(f.Chargers.Content); i += 2 {
 		entryName := f.Chargers.Content[i].Value
 		at := "chargers." + entryName
@@ -274,13 +280,25 @@ func Parse(data []byte, baseDir string, lookupEnv func(string) (string, bool)) (
 			problem("%s: %v", at, err)
 		}
 
+		chargerName := strings.TrimSpace(fe.Name)
+		if chargerName != "" {
+			if len(ids) > 1 {
+				problem("%s: name can only be given to an entry that creates one charger; this one creates %d, which get names made up for them", at, len(ids))
+			} else if err := names.Validate(chargerName); err != nil {
+				problem("%s: %v", at, err)
+			} else if other, dup := seenNames[chargerName]; dup {
+				problem("%s: the name %q is already used by chargers.%s", at, chargerName, other)
+			}
+			seenNames[chargerName] = entryName
+		}
+
 		for _, id := range ids {
 			if other, dup := seen[id]; dup {
 				problem("%s: charge point ID %q is already used by chargers.%s", at, id, other)
 				continue
 			}
 			seen[id] = entryName
-			entry.Chargers = append(entry.Chargers, Charger{ID: id, Model: m, CSMS: csms, EV: fe.EV})
+			entry.Chargers = append(entry.Chargers, Charger{ID: id, Name: chargerName, Model: m, CSMS: csms, EV: fe.EV})
 		}
 		site.Entries = append(site.Entries, entry)
 	}

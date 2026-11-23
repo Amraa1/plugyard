@@ -5,7 +5,7 @@ A terminal tool that simulates EV chargers so developers can test a CSMS without
 ## Language
 
 **Charger**:
-One running simulated instance, with its own charge point ID and its own connection to the CSMS. It is what OCPP 1.6 calls a Charge Point.
+One simulated instance, with its own charge point ID and its own connection to the CSMS. It exists whether powered on or stopped. It is what OCPP 1.6 calls a Charge Point.
 _Avoid_: Charge point, charging station, container, instance
 
 **Model**:
@@ -39,6 +39,14 @@ _Avoid_: Script, test, playbook
 **Charge point ID**:
 The identifier by which the CSMS knows a charger.
 _Avoid_: Charger ID, station ID, serial
+
+**Name**:
+A second handle for a charger, used on the command line in place of its charge point ID and unique on the machine. The CSMS never sees it.
+_Avoid_: Alias, label, nickname
+
+**Saved state**:
+What a charger remembers while it is powered off, so that it comes back as the same charger.
+_Avoid_: Snapshot, persistence, volume
 
 **CSMS**:
 The backend system under test that chargers connect to and exchange OCPP messages with.

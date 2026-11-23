@@ -36,7 +36,8 @@ func startRun(t *testing.T, csms *csmstest.CSMS, id string, extra ...string) {
 	runCtx, interrupt := context.WithCancel(context.Background())
 	var stdout, stderr syncBuffer
 	exit := make(chan int, 1)
-	args := append([]string{"run", path, "--csms", csms.URL(), "--id", id}, extra...)
+	// A name of its own keeps what ps prints predictable.
+	args := append([]string{"run", path, "--csms", csms.URL(), "--id", id, "--name", strings.ToLower(id)}, extra...)
 	go func() { exit <- RunContext(runCtx, args, &stdout, &stderr) }()
 
 	t.Cleanup(func() {
@@ -76,8 +77,8 @@ func TestATransactionDrivenFromASecondTerminal(t *testing.T) {
 	if code != ExitOK {
 		t.Fatalf("ps: exit %d, stderr %q", code, stderr)
 	}
-	wantPs := "CHARGE POINT ID  SITE  CONNECTION  CONNECTORS\n" +
-		"CP-1             CP-1  online      1:Available\n"
+	wantPs := "CHARGE POINT ID  NAME  SITE  CONNECTION  CONNECTORS\n" +
+		"CP-1             cp-1  CP-1  online      1:Available\n"
 	if stdout != wantPs {
 		t.Errorf("ps printed:\n%s\nwant:\n%s", stdout, wantPs)
 	}
@@ -188,7 +189,7 @@ func TestPsWithNothingRunningPrintsOnlyTheHeader(t *testing.T) {
 	useTempDataDir(t)
 
 	code, stdout, stderr := run("ps")
-	if code != ExitOK || stdout != "CHARGE POINT ID  SITE  CONNECTION  CONNECTORS\n" {
+	if code != ExitOK || stdout != "CHARGE POINT ID  NAME  SITE  CONNECTION  CONNECTORS\n" {
 		t.Errorf("ps: exit %d, stdout %q, stderr %q", code, stdout, stderr)
 	}
 }
@@ -205,7 +206,7 @@ func TestSiteFlagNarrowsToOneSite(t *testing.T) {
 	}
 
 	code, _, stderr := run("ps", "-s", "nowhere")
-	if code != ExitFailure || !strings.Contains(stderr, `no running site is named "nowhere"`) {
+	if code != ExitFailure || !strings.Contains(stderr, `no site is named "nowhere"`) {
 		t.Errorf("ps -s nowhere: exit %d, stderr %q", code, stderr)
 	}
 

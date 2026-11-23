@@ -2,7 +2,7 @@
 
 A terminal tool that simulates EV chargers, so you can develop and test a CSMS (charging station management system) without hardware. Its command line follows Docker's conventions: a file describes a kind of charger, a YAML file starts many of them together, and `ps` and `exec` operate on the running ones.
 
-> **Status: early implementation.** The V1 design is written down in [docs/SPEC.md](docs/SPEC.md). Chargers can be started one at a time or as a site of many, and run transactions driven from a second terminal. Saved state, `logs`, faults and requests from the CSMS are not built yet; see [What is not built yet](#what-is-not-built-yet).
+> **Status: early implementation.** The V1 design is written down in [docs/SPEC.md](docs/SPEC.md). Chargers can be started one at a time or as a site of many, run transactions driven from a second terminal, and keep their state when stopped. `logs`, faults and requests from the CSMS are not built yet; see [What is not built yet](#what-is-not-built-yet).
 
 ## Quick start: twenty chargers
 
@@ -43,7 +43,7 @@ plugyard site up            # starts them and shows their logs; Ctrl+C shuts the
 That is all. In a second terminal:
 
 ```sh
-plugyard ps                              # every charger, its connection and connector statuses
+plugyard ps                              # every charger, its name, connection and connector statuses
 plugyard exec FAST-1 plug                # plug an EV into FAST-1
 plugyard exec FAST-1 tap 04A1B2C3        # present a tag: Authorize, then StartTransaction
 plugyard exec 'FAST-*' plug              # act on every charger whose ID matches
@@ -57,10 +57,45 @@ A ready-made version of this site, with more settings shown, is in [examples/sit
 ```sh
 plugyard site up -d         # returns once the site is running
 plugyard site ls            # the sites that are running
-plugyard site down          # shuts the site down
+plugyard site stop          # shuts the site down
+plugyard site start         # brings it back as it was
 ```
 
 The site keeps running after you close the terminal, and ends when you sign out.
+
+### Chargers remember
+
+A charger keeps its state when it is stopped: its meter, its configuration, the EV plugged into it, and anything it still owes the CSMS. So your CSMS meets the same chargers every time, with meters that never run backwards.
+
+```sh
+plugyard stop FAST-1          # orderly shutdown: StopTransaction, then the connection closes
+plugyard start FAST-1         # the same charger boots again
+plugyard kill FAST-1          # power cut: the connection drops with no message
+plugyard start FAST-1         # it boots and reports the transaction with reason PowerLoss
+plugyard ps -a                # also lists the stopped chargers
+plugyard rm FAST-1            # wipes the charger's saved state
+```
+
+`kill` is how you test what your CSMS does when a charger loses power mid-transaction. The same happens if the machine crashes or plugyard is ended from the task manager: the next start reports `PowerLoss` with the last meter reading saved, which is at most five seconds old.
+
+| To | Use |
+|---|---|
+| Stop a site and come back to it later | `plugyard site stop`, then `plugyard site start` |
+| Apply changes made to the site file | `plugyard site up` |
+| Take a site off the list but keep its state | `plugyard site down` |
+| Start over with fresh chargers | `plugyard site down --reset` |
+
+If you edit a site file so that saved state would be lost, for example by removing a charger, `site up` lists what is affected and asks first. `--yes` answers in advance, for scripts.
+
+### Names
+
+Every charger also gets a name, as Docker containers do: `brisk_volt`, `quiet_ampere`. A name is unique on your machine, so it always means one charger, even when two sites use the same charge point ID. Use it wherever a command takes a charger:
+
+```sh
+plugyard exec brisk_volt plug
+```
+
+Give a charger a name of your own with `name:` in the site file (on an entry that creates one charger) or `--name` on `plugyard run`. Your CSMS never sees the name, only the charge point ID.
 
 ### When you need more from the IDs
 
@@ -87,11 +122,10 @@ All of it is specified in [docs/SPEC.md](docs/SPEC.md), sections 5 to 7.
 plugyard run Chargerfile --csms ws://localhost:9000/ocpp --id CP-1
 ```
 
-It runs in the foreground until you press Ctrl+C. Add `--password` (or set `PLUGYARD_CSMS_PASSWORD`) for Basic Auth over `wss://`.
+It runs in the foreground until you press Ctrl+C. Its state is saved too: run the same `--id` again and the same charger comes back. Add `--rm` for a throwaway charger that saves nothing, and `--password` (or set `PLUGYARD_CSMS_PASSWORD`) for Basic Auth over `wss://`.
 
 ## What is not built yet
 
-- Saved state: chargers start fresh every time, and `site stop`, `site start` and `ps -a` are not available
 - `logs`, `stats` and `inspect`
 - Actions `fault`, `clear`, `offline`, `online` and `reboot`
 - Requests from the CSMS, such as `RemoteStartTransaction` and `SetChargingProfile`; the charger answers them `NotImplemented`
