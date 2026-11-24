@@ -85,6 +85,7 @@ func TestSchemasAcceptEverySetting(t *testing.T) {
 vendor: Acme
 model: FastOne 50
 firmware: 1.0
+ocpp: 1.6J
 connectors:
   - { id: 1, type: CCS2, maxPower: 50kW }
   - { id: 2, type: Type2, maxPower: 7.4 kW }
@@ -135,19 +136,20 @@ steps:
 
 func TestSchemasCatchMistakes(t *testing.T) {
 	for name, tc := range map[string]struct{ kind, text string }{
-		"a misspelled Chargerfile setting": {"chargerfile", "vendor: A\nmodel: B\nfirmware: C\nconnectors: [{ id: 1, type: CCS2, maxPower: 50kW }]\nonEVFull: stop\n"},
-		"a Chargerfile with no connectors": {"chargerfile", "vendor: A\nmodel: B\nfirmware: C\nconnectors: []\n"},
-		"a power with no unit":             {"chargerfile", "vendor: A\nmodel: B\nfirmware: C\nconnectors: [{ id: 1, type: CCS2, maxPower: \"50\" }]\n"},
-		"four phases":                      {"chargerfile", "vendor: A\nmodel: B\nfirmware: C\nconnectors: [{ id: 1, type: CCS2, maxPower: 50kW }]\nphases: 4\n"},
-		"a site with no chargers":          {"site", "name: x\nchargers: {}\n"},
-		"a site with no name":              {"site", "chargers: { a: { model: ./Chargerfile } }\n"},
-		"a misspelled site setting":        {"site", "name: x\nchargers: { a: { model: ./Chargerfile, cuont: 3 } }\n"},
-		"a charger entry with no model":    {"site", "name: x\nchargers: { a: { count: 3 } }\n"},
-		"a step with no time":              {"scenario", "name: x\nsteps: [{ charger: CP-1, do: plug }]\n"},
-		"an unknown action":                {"scenario", "name: x\nsteps: [{ at: 0s, charger: CP-1, do: explode }]\n"},
-		"a tap with no tag":                {"scenario", "name: x\nsteps: [{ at: 0s, charger: CP-1, do: tap }]\n"},
-		"a fault with an unknown code":     {"scenario", "name: x\nsteps: [{ at: 0s, charger: CP-1, do: fault, code: Exploded }]\n"},
-		"a scenario with a loop":           {"scenario", "name: x\nsteps: [{ at: 0s, charger: CP-1, do: plug }]\nloop: 3\n"},
+		"a misspelled Chargerfile setting":        {"chargerfile", "vendor: A\nmodel: B\nfirmware: C\nconnectors: [{ id: 1, type: CCS2, maxPower: 50kW }]\nonEVFull: stop\n"},
+		"a Chargerfile with no connectors":        {"chargerfile", "vendor: A\nmodel: B\nfirmware: C\nconnectors: []\n"},
+		"a power with no unit":                    {"chargerfile", "vendor: A\nmodel: B\nfirmware: C\nconnectors: [{ id: 1, type: CCS2, maxPower: \"50\" }]\n"},
+		"an OCPP version plugyard does not speak": {"chargerfile", "vendor: A\nmodel: B\nfirmware: C\nconnectors: [{ id: 1, type: CCS2, maxPower: 50kW }]\nocpp: 2.0.1\n"},
+		"four phases":                             {"chargerfile", "vendor: A\nmodel: B\nfirmware: C\nconnectors: [{ id: 1, type: CCS2, maxPower: 50kW }]\nphases: 4\n"},
+		"a site with no chargers":                 {"site", "name: x\nchargers: {}\n"},
+		"a site with no name":                     {"site", "chargers: { a: { model: ./Chargerfile } }\n"},
+		"a misspelled site setting":               {"site", "name: x\nchargers: { a: { model: ./Chargerfile, cuont: 3 } }\n"},
+		"a charger entry with no model":           {"site", "name: x\nchargers: { a: { count: 3 } }\n"},
+		"a step with no time":                     {"scenario", "name: x\nsteps: [{ charger: CP-1, do: plug }]\n"},
+		"an unknown action":                       {"scenario", "name: x\nsteps: [{ at: 0s, charger: CP-1, do: explode }]\n"},
+		"a tap with no tag":                       {"scenario", "name: x\nsteps: [{ at: 0s, charger: CP-1, do: tap }]\n"},
+		"a fault with an unknown code":            {"scenario", "name: x\nsteps: [{ at: 0s, charger: CP-1, do: fault, code: Exploded }]\n"},
+		"a scenario with a loop":                  {"scenario", "name: x\nsteps: [{ at: 0s, charger: CP-1, do: plug }]\nloop: 3\n"},
 	} {
 		if err := check(t, compile(t, tc.kind), []byte(tc.text)); err == nil {
 			t.Errorf("the %s schema accepts %s", tc.kind, name)

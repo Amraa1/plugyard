@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -339,6 +340,7 @@ func TestInspect(t *testing.T) {
 		Model         struct {
 			Vendor  string  `json:"vendor"`
 			Model   string  `json:"model"`
+			OCPP    string  `json:"ocpp"`
 			Voltage float64 `json:"voltage"`
 			Phases  int     `json:"phases"`
 		} `json:"model"`
@@ -380,7 +382,7 @@ func TestInspect(t *testing.T) {
 
 	v, raw := read()
 	if v.ChargePointID != "CP-1" || v.Site != "CP-1" || v.Name != "cp-1" || v.Connection != "online" || v.CSMSURL != csms.URL() ||
-		v.Model.Vendor != "Acme" || v.Model.Model != "Wallbox" || v.Model.Voltage != 230 || v.Model.Phases != 3 || v.MessagesSent == 0 {
+		v.Model.Vendor != "Acme" || v.Model.Model != "Wallbox" || v.Model.OCPP != "1.6" || v.Model.Voltage != 230 || v.Model.Phases != 3 || v.MessagesSent == 0 {
 		t.Errorf("inspect = %+v", v)
 	}
 	k := v.Connectors[0]
@@ -407,7 +409,7 @@ func TestInspect(t *testing.T) {
 
 	text := mustRun(t, "inspect", "cp-1")
 	for _, want := range []string{
-		"CP-1\n", "Name        cp-1", "Connection  online", "Model       Acme Wallbox, firmware 1.0", "Supply      230 V, 3 phases",
+		"CP-1\n", "Name        cp-1", "Connection  online", "Model       Acme Wallbox, firmware 1.0", "OCPP        1.6", "Supply      230 V, 3 phases",
 		"Connectors\n  1  Type2, 7.4kW  Charging", "EV: 20% of 60 kWh, charging to 100%", "transaction: 1, tag TAG-1, started ",
 		"Charging profiles\n  5  whole charger, TxDefaultProfile, stack level 0, Absolute: 16 A from 0s",
 		"Queued for the CSMS\n  nothing", "HeartbeatInterval", "77", "NumberOfConnectors", "read-only",
@@ -435,6 +437,9 @@ func TestInfo(t *testing.T) {
 	dataDir := useTempDataDir(t)
 
 	out := mustRun(t, "info")
+	if want := "Version:         dev\nOCPP:            1.6J\nBuilt with:      " + runtime.Version() + ", for " + runtime.GOOS + "/" + runtime.GOARCH + "\n"; !strings.HasPrefix(out, want) {
+		t.Errorf("info starts with:\n%s\nwant:\n%s", out, want)
+	}
 	if !strings.Contains(out, "Data directory:  "+dataDir+"\n") || !strings.Contains(out, "Sites:           0 running, 0 stopped, 0 down\n") || strings.Contains(out, "SITE") {
 		t.Errorf("info with nothing there:\n%s", out)
 	}
@@ -449,6 +454,9 @@ func TestInfo(t *testing.T) {
 	var v struct {
 		Version       string   `json:"version"`
 		OCPP          []string `json:"ocpp"`
+		Go            string   `json:"go"`
+		OS            string   `json:"os"`
+		Arch          string   `json:"arch"`
 		DataDirectory string   `json:"dataDirectory"`
 		Sites         []struct {
 			Site     string   `json:"site"`
@@ -463,7 +471,8 @@ func TestInfo(t *testing.T) {
 	if err := json.Unmarshal([]byte(raw), &v); err != nil || len(lines(raw)) != 1 {
 		t.Fatalf("info --format json is not one JSON object on one line (%v):\n%s", err, raw)
 	}
-	if v.Version == "" || len(v.OCPP) == 0 || v.DataDirectory != dataDir || len(v.Sites) != 1 {
+	if v.Version == "" || len(v.OCPP) == 0 || v.Go != runtime.Version() || v.OS != runtime.GOOS || v.Arch != runtime.GOARCH ||
+		v.DataDirectory != dataDir || len(v.Sites) != 1 {
 		t.Fatalf("info = %+v", v)
 	}
 	if s := v.Sites[0]; s.Site != "CP-1" || s.Status != "running" || s.Chargers != 1 || s.Powered != 1 || s.PID != os.Getpid() || len(s.CSMS) != 1 {

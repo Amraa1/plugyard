@@ -4,6 +4,7 @@
 vendor: Acme
 model: FastOne 50
 firmware: 1.4.2
+ocpp: 1.6          # the OCPP version this charger speaks; 1.6 is the default
 connectors:
   - { id: 1, type: CCS2, maxPower: 50kW }
   - { id: 2, type: CHAdeMO, maxPower: 50kW }

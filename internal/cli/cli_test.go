@@ -2,7 +2,6 @@ package cli
 
 import (
 	"bytes"
-	"runtime"
 	"strings"
 	"testing"
 )
@@ -22,14 +21,9 @@ func TestVersion(t *testing.T) {
 	if stderr != "" {
 		t.Errorf("stderr = %q, want empty", stderr)
 	}
-	for _, want := range []string{
-		"Version:  dev",
-		"OCPP:     1.6J",
-		"OS/Arch:  " + runtime.GOOS + "/" + runtime.GOARCH,
-	} {
-		if !strings.Contains(stdout, want) {
-			t.Errorf("stdout missing %q:\n%s", want, stdout)
-		}
+	// The version and nothing else, so that a script can use it as it is.
+	if stdout != "dev\n" {
+		t.Errorf("stdout = %q, want %q", stdout, "dev\n")
 	}
 }
 

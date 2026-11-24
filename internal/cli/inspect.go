@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -44,9 +45,11 @@ type inspection struct {
 }
 
 type inspectedModel struct {
-	Vendor   string  `json:"vendor"`
-	Model    string  `json:"model"`
-	Firmware string  `json:"firmware"`
+	Vendor   string `json:"vendor"`
+	Model    string `json:"model"`
+	Firmware string `json:"firmware"`
+	// OCPP is the OCPP version the charger speaks, such as "1.6".
+	OCPP     string  `json:"ocpp"`
 	Voltage  float64 `json:"voltage"`
 	Phases   int     `json:"phases"`
 	OnEvFull string  `json:"onEvFull"`
@@ -168,7 +171,7 @@ func inspect(now control.ChargerState, details control.Inspection) inspection {
 		Connection:    now.Connection,
 		CSMSURL:       details.CSMSURL,
 		Model: inspectedModel{
-			Vendor: m.Vendor, Model: m.Name, Firmware: m.Firmware,
+			Vendor: m.Vendor, Model: m.Name, Firmware: m.Firmware, OCPP: m.OCPPVersion(),
 			Voltage: voltage, Phases: phases, OnEvFull: m.OnEvFull, StartOn: m.StartOn,
 		},
 		ChargingProfiles: []charger.InstalledProfile{},
@@ -238,6 +241,7 @@ func writeInspection(w io.Writer, v inspection) {
 		{plain("  Connection"), {plain: v.Connection, rendered: p.connection(v.Connection)}},
 		{plain("  CSMS"), plain(v.CSMSURL)},
 		{plain("  Model"), plain(fmt.Sprintf("%s %s, firmware %s", v.Model.Vendor, v.Model.Model, v.Model.Firmware))},
+		{plain("  OCPP"), plain(v.Model.OCPP)},
 		{plain("  Supply"), plain(fmt.Sprintf("%s V, %s", strconv.FormatFloat(v.Model.Voltage, 'f', -1, 64), countPhases(v.Model.Phases)))},
 		{plain("  Behavior"), plain(fmt.Sprintf("starts on %s; when the EV is full: %s", v.Model.StartOn, v.Model.OnEvFull))},
 		{plain("  Messages"), plain(fmt.Sprintf("%d sent, %d received since power-on", v.MessagesSent, v.MessagesReceived))},
@@ -361,8 +365,13 @@ func countPhases(n int) string {
 
 // infoView is what "plugyard info" shows.
 type infoView struct {
-	Version       string     `json:"version"`
-	OCPP          []string   `json:"ocpp"`
+	Version string   `json:"version"`
+	OCPP    []string `json:"ocpp"`
+	// Go is the version of Go plugyard was built with, and OS and Arch the
+	// system it was built for. They matter when a problem is reported.
+	Go            string     `json:"go"`
+	OS            string     `json:"os"`
+	Arch          string     `json:"arch"`
 	DataDirectory string     `json:"dataDirectory"`
 	Sites         []infoSite `json:"sites"`
 }
@@ -379,7 +388,10 @@ func newInfo() *cobra.Command {
 		Use:   "info",
 		Short: "Show the sites on this machine and where plugyard keeps its data",
 		Long: "Show every site on this machine, running or not, with its chargers and\n" +
-			"the CSMS it connects to, and the directory that holds saved state and logs.",
+			"the CSMS it connects to, and the directory that holds saved state and logs.\n\n" +
+			"It also says which plugyard this is: its version, the OCPP versions it\n" +
+			"speaks, and what it was built with and for. Include this output when you\n" +
+			"report a problem.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if err := checkFormat(format); err != nil {
@@ -391,7 +403,11 @@ func newInfo() *cobra.Command {
 			}
 			defer w.close()
 
-			view := infoView{Version: buildinfo.Version(), OCPP: buildinfo.OCPPVersions, DataDirectory: w.dir, Sites: []infoSite{}}
+			view := infoView{
+				Version: buildinfo.Version(), OCPP: buildinfo.OCPPVersions,
+				Go: runtime.Version(), OS: runtime.GOOS, Arch: runtime.GOARCH,
+				DataDirectory: w.dir, Sites: []infoSite{},
+			}
 			powered := map[string]int{}
 			for _, client := range w.clients {
 				powered[client.Info.Site] = client.Info.Powered
@@ -408,6 +424,7 @@ func newInfo() *cobra.Command {
 			}
 			fmt.Fprintf(out, "Version:         %s\n", view.Version)
 			fmt.Fprintf(out, "OCPP:            %s\n", strings.Join(view.OCPP, ", "))
+			fmt.Fprintf(out, "Built with:      %s, for %s/%s\n", view.Go, view.OS, view.Arch)
 			fmt.Fprintf(out, "Data directory:  %s\n", view.DataDirectory)
 			fmt.Fprintf(out, "Sites:           %d running, %d stopped, %d down\n", counts[siteRunning], counts[siteStopped], counts[siteDown])
 			if len(view.Sites) == 0 {

@@ -53,6 +53,8 @@ try {
         $env:Path = "$env:Path;$dir"
     }
 
+    # "plugyard version" prints only the version; before v0.1.1 it printed
+    # "Version:  v0.1.0" as the first of several lines.
     $version = ((& $exe version) | Select-Object -First 1) -replace '^Version:\s*', ''
     Write-Host "Installed plugyard $version in $dir"
     if (-not $onPath) {

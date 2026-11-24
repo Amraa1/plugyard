@@ -34,9 +34,11 @@ const (
 
 // Model is a kind of charger, as declared by one Chargerfile.
 type Model struct {
-	Vendor     string
-	Name       string
-	Firmware   string
+	Vendor   string
+	Name     string
+	Firmware string
+	// OCPP is the OCPP version the charger speaks. Empty means the default.
+	OCPP       string
 	Connectors []Connector
 	// Config holds the default values of OCPP configuration keys.
 	Config   map[string]string
@@ -50,6 +52,18 @@ type Model struct {
 	// power: amps x Voltage x Phases. Zero means the default.
 	Voltage float64
 	Phases  int
+}
+
+// OCPP16 is the one OCPP version a charger can speak for now, and the
+// default. It is OCPP 1.6 with JSON over WebSocket, also written 1.6J.
+const OCPP16 = "1.6"
+
+// OCPPVersion returns the OCPP version the charger speaks.
+func (m *Model) OCPPVersion() string {
+	if m.OCPP == "" {
+		return OCPP16
+	}
+	return m.OCPP
 }
 
 // The electrical supply assumed when a Chargerfile does not say.
@@ -129,6 +143,7 @@ type file struct {
 	StartTag   string          `yaml:"startTag"`
 	// DataTransfer lists vendor IDs.
 	DataTransfer []string `yaml:"dataTransfer"`
+	OCPP         string   `yaml:"ocpp"`
 	Voltage      *float64 `yaml:"voltage"`
 	Phases       *int     `yaml:"phases"`
 }
@@ -185,6 +200,13 @@ func Parse(data []byte) (*Model, error) {
 		} else {
 			m.DataTransfer = append(m.DataTransfer, vendor)
 		}
+	}
+
+	switch strings.ToUpper(strings.TrimSpace(f.OCPP)) {
+	case "", "1.6", "1.6J":
+		m.OCPP = OCPP16
+	default:
+		problem("ocpp is %q, want %s: it is the only OCPP version plugyard speaks for now", f.OCPP, OCPP16)
 	}
 
 	m.Voltage, m.Phases = DefaultVoltage, DefaultPhases

@@ -48,7 +48,9 @@ mkdir -p "$dir"
 chmod 755 "$tmp/plugyard"
 mv -f "$tmp/plugyard" "$dir/plugyard"
 
-echo "Installed $("$dir/plugyard" version | head -n 1 | awk '{ print "plugyard " $2 }') in $dir"
+# "plugyard version" prints only the version; before v0.1.1 it printed
+# "Version:  v0.1.0" as the first of several lines.
+echo "Installed plugyard $("$dir/plugyard" version | head -n 1 | awk '{ print $NF }') in $dir"
 case ":$PATH:" in
   *":$dir:"*) echo "Try it: plugyard init my-site" ;;
   *)

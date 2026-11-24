@@ -18,7 +18,7 @@ irm https://raw.githubusercontent.com/Amraa1/plugyard/main/install.ps1 | iex
 curl -fsSL https://raw.githubusercontent.com/Amraa1/plugyard/main/install.sh | sh
 ```
 
-Either one downloads the latest release for your system, checks it against the release's checksums, and puts `plugyard` in your user folder: `%LOCALAPPDATA%\Programs\plugyard` on Windows (added to your PATH), `~/.local/bin` elsewhere. No administrator rights are needed. Open a new terminal afterwards and run `plugyard version`.
+Either one downloads the latest release for your system, checks it against the release's checksums, and puts `plugyard` in your user folder: `%LOCALAPPDATA%\Programs\plugyard` on Windows (added to your PATH), `~/.local/bin` elsewhere. No administrator rights are needed. Open a new terminal afterwards and run `plugyard version`, which prints the version you have.
 
 Other ways:
 
@@ -125,7 +125,7 @@ plugyard logs 'FAST-*' --events --since 10m
 plugyard site logs -f                    # the whole site
 plugyard stats                           # live power, energy and message counts
 plugyard inspect FAST-1                  # everything about one charger
-plugyard info                            # every site on this machine, and where data is kept
+plugyard info                            # every site on this machine, where data is kept, and which build this is
 ```
 
 - **Logs** are kept on disk, so they are there for a site in the background and after a stop. A log holds the newest 30 MB; `log: { maxSize: 100MB, files: 5 }` in the site file changes that.

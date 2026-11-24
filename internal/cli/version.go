@@ -2,8 +2,6 @@ package cli
 
 import (
 	"fmt"
-	"runtime"
-	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -13,14 +11,13 @@ import (
 func newVersion() *cobra.Command {
 	return &cobra.Command{
 		Use:   "version",
-		Short: "Print the version and supported OCPP versions",
-		Args:  cobra.NoArgs,
+		Short: "Print the version",
+		Long: "Print the version of plugyard and nothing else, so that a script can use\n" +
+			"it as it is. \"plugyard info\" says more: the OCPP versions, the Go version\n" +
+			"and the system plugyard was built for.",
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			out := cmd.OutOrStdout()
-			fmt.Fprintf(out, "Version:  %s\n", buildinfo.Version())
-			fmt.Fprintf(out, "OCPP:     %s\n", strings.Join(buildinfo.OCPPVersions, ", "))
-			fmt.Fprintf(out, "Go:       %s\n", runtime.Version())
-			fmt.Fprintf(out, "OS/Arch:  %s/%s\n", runtime.GOOS, runtime.GOARCH)
+			fmt.Fprintln(cmd.OutOrStdout(), buildinfo.Version())
 			return nil
 		},
 	}
