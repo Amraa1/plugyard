@@ -20,6 +20,7 @@ import (
 	"github.com/Amraa1/plugyard/internal/charger"
 	"github.com/Amraa1/plugyard/internal/control"
 	"github.com/Amraa1/plugyard/internal/datadir"
+	"github.com/Amraa1/plugyard/internal/logfile"
 	"github.com/Amraa1/plugyard/internal/names"
 	"github.com/Amraa1/plugyard/internal/site"
 	"github.com/Amraa1/plugyard/internal/sitefile"
@@ -372,8 +373,10 @@ func prepare(ctx context.Context, cmd *cobra.Command, dir string, meta store.Met
 // serveSaved runs a site from its saved state in this process until ctx is
 // cancelled, a command asks it to shut down, or its last powered charger is
 // stopped. It answers other commands on the site's socket meanwhile, and
-// closes the store when done. password gives the CSMS password of a charger.
-func serveSaved(ctx context.Context, dir string, st *store.Store, out io.Writer, password func(chargePointID string) string) error {
+// closes the store when done. The log of every charger is printed to out,
+// unless that is nil, and with keepLog written to the site's log files too.
+// password gives the CSMS password of a charger.
+func serveSaved(ctx context.Context, dir string, st *store.Store, out io.Writer, keepLog bool, password func(chargePointID string) string) error {
 	defer st.Close()
 
 	saved, err := st.Load()
@@ -405,13 +408,31 @@ func serveSaved(ctx context.Context, dir string, st *store.Store, out io.Writer,
 		return err
 	}
 
+	var sinks []func(charger.Entry)
+	if out != nil {
+		sinks = append(sinks, newLogPrinter(out))
+	}
+	var logWriter *logfile.Writer
+	if keepLog {
+		logWriter, err = logfile.Open(store.LogPath(dir, saved.Meta.Name), saved.Meta.LogMaxSize, saved.Meta.LogFiles)
+		if err != nil {
+			return fmt.Errorf("cannot open the site's log: %w", err)
+		}
+		defer logWriter.Close()
+		sinks = append(sinks, newLogPrinter(logWriter))
+	}
+
 	s, err := site.New(site.Config{
 		Name:        saved.Meta.Name,
 		Speed:       saved.Meta.Speed,
 		ConnectRate: saved.Meta.ConnectRate,
 		Presets:     saved.Meta.EVs,
-		Log:         newLogPrinter(out),
-		Store:       st,
+		Log: func(e charger.Entry) {
+			for _, sink := range sinks {
+				sink(e)
+			}
+		},
+		Store: st,
 	}, members)
 	if err != nil {
 		return err
@@ -429,6 +450,9 @@ func serveSaved(ctx context.Context, dir string, st *store.Store, out io.Writer,
 	// A site whose last charger was removed leaves nothing behind.
 	if left, err := st.Chargers(); err == nil && len(left) == 0 {
 		st.Close()
+		if logWriter != nil {
+			logWriter.Close()
+		}
 		_ = store.Delete(dir, saved.Meta.Name)
 	}
 	return runErr
@@ -483,15 +507,17 @@ func startBackground(ctx context.Context, dir, siteName string) (control.Info, e
 		return none, fmt.Errorf("site %q: %w", siteName, control.ErrAlreadyRunning)
 	}
 
-	// The background copy has no terminal, so what it prints goes to a file
-	// beside the site's saved state.
-	logPath := store.LogPath(dir, siteName)
-	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	// The background copy has no terminal. The log of its chargers goes to
+	// the site's log files; what the process itself prints, which is only
+	// what goes wrong with it, goes to a file of its own that starts empty
+	// each time.
+	logPath := store.OutputPath(dir, siteName)
+	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 	if err != nil {
 		return none, err
 	}
 	defer logFile.Close()
-	before, _ := logFile.Seek(0, io.SeekEnd)
+	before := int64(0)
 
 	exe, err := os.Executable()
 	if err != nil {
@@ -531,7 +557,7 @@ func startBackground(ctx context.Context, dir, siteName string) (control.Info, e
 // reportBackground says where a site started in the background runs.
 func reportBackground(out io.Writer, dir string, info control.Info) {
 	fmt.Fprintf(out, "Site %s is running in the background with %s (process %d)\n", info.Site, countChargers(info.Powered), info.PID)
-	fmt.Fprintf(out, "Its log is in %s\n", store.LogPath(dir, info.Site))
+	fmt.Fprintf(out, "Follow its log with: plugyard site logs -s %s -f\n", info.Site)
 }
 
 // tailFrom returns the last lines of what a text file holds after offset.

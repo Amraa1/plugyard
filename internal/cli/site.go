@@ -33,7 +33,7 @@ func newSite() *cobra.Command {
 			return cmd.Help()
 		},
 	}
-	cmd.AddCommand(newSiteUp(), newSiteStop(), newSiteStart(), newSiteDown(), newSiteLs(), newSiteValidate(), newSiteServe())
+	cmd.AddCommand(newSiteUp(), newSiteStop(), newSiteStart(), newSiteDown(), newSiteLs(), newSiteLogs(), newSiteValidate(), newSiteServe())
 	return cmd
 }
 
@@ -150,6 +150,8 @@ func newSiteUp() *cobra.Command {
 				Speed:       sf.Speed,
 				ConnectRate: sf.ConnectRate,
 				EVs:         sf.EVs,
+				LogMaxSize:  sf.LogMaxSize,
+				LogFiles:    sf.LogFiles,
 			}
 			st, err := prepare(cmd.Context(), cmd, dir, meta, desiredFromFile(sf), yes, false)
 			if err != nil {
@@ -169,7 +171,7 @@ func newSiteUp() *cobra.Command {
 
 			fmt.Fprintf(out, "Starting site %s with %s\n", sf.Name, countChargers(count))
 			passwords := filePasswords(sf)
-			return serveSaved(cmd.Context(), dir, st, out, func(id string) string { return passwords[id] })
+			return serveSaved(cmd.Context(), dir, st, out, true, func(id string) string { return passwords[id] })
 		},
 	}
 
@@ -208,7 +210,9 @@ func newSiteServe() *cobra.Command {
 				st.Close()
 				return err
 			}
-			return serveSaved(cmd.Context(), dir, st, cmd.OutOrStdout(), password)
+			// A site in the background has no terminal: its log goes to the
+			// log files only.
+			return serveSaved(cmd.Context(), dir, st, nil, true, password)
 		},
 	}
 	cmd.Flags().StringVarP(&siteName, "site", "s", "", "name of the site to run")
@@ -417,6 +421,46 @@ type siteRow struct {
 	PID int `json:"pid,omitempty"`
 }
 
+// siteRows lists the running sites and, with all, the stopped and the down
+// ones too, sorted by name.
+func siteRows(w *world, all bool) []siteRow {
+	rows := []siteRow{}
+	running := map[string]bool{}
+	for _, client := range w.clients {
+		running[client.Info.Site] = true
+		rows = append(rows, siteRow{
+			Site:     client.Info.Site,
+			Status:   siteRunning,
+			Chargers: client.Info.Chargers,
+			CSMS:     client.Info.CSMS,
+			PID:      client.Info.PID,
+		})
+	}
+	if !all {
+		return rows
+	}
+	for _, s := range w.saved {
+		if running[s.Meta.Name] {
+			continue
+		}
+		row := siteRow{Site: s.Meta.Name, Status: siteStopped, Chargers: len(s.Chargers), CSMS: []string{}}
+		if s.Meta.Down {
+			row.Status = siteDown
+		}
+		seen := map[string]bool{}
+		for _, c := range s.Chargers {
+			if !seen[c.Spec.CSMSURL] {
+				seen[c.Spec.CSMSURL] = true
+				row.CSMS = append(row.CSMS, c.Spec.CSMSURL)
+			}
+		}
+		sort.Strings(row.CSMS)
+		rows = append(rows, row)
+	}
+	sort.SliceStable(rows, func(i, j int) bool { return rows[i].Site < rows[j].Site })
+	return rows
+}
+
 func newSiteLs() *cobra.Command {
 	var (
 		all    bool
@@ -439,39 +483,7 @@ func newSiteLs() *cobra.Command {
 			}
 			defer w.close()
 
-			rows := []siteRow{}
-			running := map[string]bool{}
-			for _, client := range w.clients {
-				running[client.Info.Site] = true
-				rows = append(rows, siteRow{
-					Site:     client.Info.Site,
-					Status:   siteRunning,
-					Chargers: client.Info.Chargers,
-					CSMS:     client.Info.CSMS,
-					PID:      client.Info.PID,
-				})
-			}
-			if all {
-				for _, s := range w.saved {
-					if running[s.Meta.Name] {
-						continue
-					}
-					row := siteRow{Site: s.Meta.Name, Status: siteStopped, Chargers: len(s.Chargers), CSMS: []string{}}
-					if s.Meta.Down {
-						row.Status = siteDown
-					}
-					seen := map[string]bool{}
-					for _, c := range s.Chargers {
-						if !seen[c.Spec.CSMSURL] {
-							seen[c.Spec.CSMSURL] = true
-							row.CSMS = append(row.CSMS, c.Spec.CSMSURL)
-						}
-					}
-					sort.Strings(row.CSMS)
-					rows = append(rows, row)
-				}
-				sort.SliceStable(rows, func(i, j int) bool { return rows[i].Site < rows[j].Site })
-			}
+			rows := siteRows(w, all)
 
 			out := cmd.OutOrStdout()
 			if format == formatJSON {

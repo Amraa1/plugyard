@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Amraa1/plugyard/internal/model"
 	"github.com/Amraa1/plugyard/internal/ocpp/v16"
 )
 
@@ -165,4 +166,43 @@ func validValue(kind keyKind, value string) bool {
 		}
 	}
 	return true
+}
+
+// baseConfig returns the configuration keys of a model before the CSMS has
+// changed any: the charger's own defaults, then what the Chargerfile sets.
+func baseConfig(m *model.Model) map[string]string {
+	config := map[string]string{}
+	for key, value := range defaultConfig {
+		config[key] = value
+	}
+	for key, value := range m.Config {
+		config[key] = value
+	}
+	config["NumberOfConnectors"] = strconv.Itoa(len(m.Connectors))
+	return config
+}
+
+// ConfigKey is one configuration key of a charger.
+type ConfigKey struct {
+	Key      string `json:"key"`
+	Value    string `json:"value"`
+	Readonly bool   `json:"readonly"`
+}
+
+// Configuration lists the configuration keys of a charger of the given
+// model with the given state, sorted by key. A nil state is a charger that
+// has never run.
+func Configuration(m *model.Model, st *State) []ConfigKey {
+	config := baseConfig(m)
+	if st != nil {
+		for key, value := range st.Config {
+			config[key] = value
+		}
+	}
+	keys := make([]ConfigKey, 0, len(config))
+	for key, value := range config {
+		keys = append(keys, ConfigKey{Key: key, Value: value, Readonly: knownKeys[key].readonly})
+	}
+	sort.Slice(keys, func(i, j int) bool { return keys[i].Key < keys[j].Key })
+	return keys
 }

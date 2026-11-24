@@ -92,6 +92,10 @@ type Snapshot struct {
 	ChargePointID string              `json:"chargePointId"`
 	Connection    string              `json:"connection"`
 	Connectors    []ConnectorSnapshot `json:"connectors"`
+	// MessagesSent and MessagesReceived count the OCPP messages since the
+	// charger was powered on.
+	MessagesSent     int64 `json:"messagesSent"`
+	MessagesReceived int64 `json:"messagesReceived"`
 }
 
 // ConnectorSnapshot is the state of a connector at one moment.
@@ -114,7 +118,12 @@ func (c *Charger) Snapshot() Snapshot {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	s := Snapshot{ChargePointID: c.cfg.ID, Connection: c.connection}
+	s := Snapshot{
+		ChargePointID:    c.cfg.ID,
+		Connection:       c.connection,
+		MessagesSent:     c.sent.Load(),
+		MessagesReceived: c.received.Load(),
+	}
 	now := time.Now()
 	// The charger as a whole is listed, as connector 0, only when something
 	// is the matter with it.

@@ -2,7 +2,7 @@
 
 A terminal tool that simulates EV chargers, so you can develop and test a CSMS (charging station management system) without hardware. Its command line follows Docker's conventions: a file describes a kind of charger, a YAML file starts many of them together, and `ps` and `exec` operate on the running ones.
 
-> **Status: early implementation.** The V1 design is written down in [docs/SPEC.md](docs/SPEC.md). Chargers can be started one at a time or as a site of many, run transactions driven from a second terminal, keep their state when stopped, obey the CSMS, including its charging profiles, and fail on demand. `logs` is not built yet; see [What is not built yet](#what-is-not-built-yet).
+> **Status: early implementation.** The V1 design is written down in [docs/SPEC.md](docs/SPEC.md). Chargers can be started one at a time or as a site of many, run transactions driven from a second terminal, keep their state when stopped, obey the CSMS, including its charging profiles, fail on demand, and can be watched and scripted. Scenarios and prebuilt binaries are not built yet; see [What is not built yet](#what-is-not-built-yet).
 
 ## Quick start: twenty chargers
 
@@ -62,6 +62,36 @@ plugyard site start         # brings it back as it was
 ```
 
 The site keeps running after you close the terminal, and ends when you sign out.
+
+### See what is happening
+
+```sh
+plugyard logs FAST-1 -f                  # events and every OCPP message, as they happen
+plugyard logs 'FAST-*' --events --since 10m
+plugyard site logs -f                    # the whole site
+plugyard stats                           # live power, energy and message counts
+plugyard inspect FAST-1                  # everything about one charger
+plugyard info                            # every site on this machine, and where data is kept
+```
+
+- **Logs** are kept on disk, so they are there for a site in the background and after a stop. A log holds the newest 30 MB; `log: { maxSize: 100MB, files: 5 }` in the site file changes that.
+- **`inspect`** shows the configuration keys with their current values, the charging profiles your CSMS installed, the EV and transaction on each connector, and the messages still queued for the CSMS.
+- **`stats`** refreshes every second in a terminal. `--no-stream` prints once.
+
+#### In scripts and CI
+
+Every listing command takes `--format json` and prints one object per line. Exit codes are `0` for success, `1` when something could not be done, and `2` for a mistake in the command or a file.
+
+```sh
+# Did FAST-1 send a StopTransaction?
+plugyard logs FAST-1 --format json | jq -e 'select(.kind == "sent" and .message[2] == "StopTransaction")'
+
+# Total power of the site, in watts
+plugyard stats --format json | jq -s 'map(.powerW) | add'
+
+# The value of one configuration key
+plugyard inspect FAST-1 --format json | jq -r '.configuration[] | select(.key == "HeartbeatInterval").value'
+```
 
 ### Chargers remember
 
@@ -187,7 +217,6 @@ It runs in the foreground until you press Ctrl+C. Its state is saved too: run th
 
 ## What is not built yet
 
-- `logs`, `stats` and `inspect`
 - Firmware updates, local authorization lists and reservations; the charger answers these `NotSupported`
 - `scenario run` and `init`
 - Prebuilt binaries

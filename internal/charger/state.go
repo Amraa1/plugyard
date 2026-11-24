@@ -63,6 +63,8 @@ type TxState struct {
 	ParentIDTag string          `json:"parentIdTag,omitempty"`
 	Begin       *v16.MeterValue `json:"begin,omitempty"`
 	EVFull      bool            `json:"evFull,omitempty"`
+	// StartedAt is when the transaction started.
+	StartedAt time.Time `json:"startedAt,omitzero"`
 }
 
 // QueuedMessage is a message still owed to the CSMS.
@@ -117,6 +119,13 @@ func (s *State) Snapshot(chargePointID string, m *model.Model) Snapshot {
 	return snap
 }
 
+// State returns the state of a running charger as of now.
+func (c *Charger) State() State {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.state(time.Now())
+}
+
 // state returns the charger's state as of now. The caller holds c.mu.
 func (c *Charger) state(now time.Time) State {
 	st := State{SavedAt: now, NextTxRef: c.nextTxRef, Fault: c.zero.fault, Inoperative: c.zero.inoperative}
@@ -150,6 +159,7 @@ func (c *Charger) state(now time.Time) State {
 				ParentIDTag: tx.parentIDTag,
 				Begin:       tx.begin,
 				EVFull:      tx.evFull,
+				StartedAt:   tx.started,
 			}
 		}
 		st.Connectors = append(st.Connectors, ks)

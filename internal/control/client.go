@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -88,6 +89,13 @@ func (c *Client) Chargers(ctx context.Context) ([]ChargerState, error) {
 		states[i].Powered = w.Powered
 	}
 	return states, nil
+}
+
+// Inspect returns everything the site knows about one of its chargers.
+func (c *Client) Inspect(ctx context.Context, chargePointID string) (Inspection, error) {
+	var out Inspection
+	err := c.do(ctx, http.MethodGet, "/v1/inspect?id="+url.QueryEscape(chargePointID), nil, &out)
+	return out, err
 }
 
 // Power powers chargers of the site on or off, or removes them, and returns

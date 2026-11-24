@@ -10,11 +10,12 @@ import (
 	"github.com/Amraa1/plugyard/internal/charger"
 	"github.com/Amraa1/plugyard/internal/datadir"
 	"github.com/Amraa1/plugyard/internal/ev"
+	"github.com/Amraa1/plugyard/internal/model"
 )
 
 // ProtocolVersion changes whenever requests or answers change shape. A
 // command only talks to a site that speaks the same version.
-const ProtocolVersion = 4
+const ProtocolVersion = 5
 
 const (
 	socketPrefix = "s-"
@@ -121,4 +122,12 @@ type ExecResult struct {
 	OK        bool `json:"ok"`
 	// Message is the outcome when OK, and the reason when not.
 	Message string `json:"message"`
+}
+
+// Inspection is everything a site knows about one of its chargers.
+type Inspection struct {
+	Model   *model.Model `json:"model"`
+	CSMSURL string       `json:"csmsUrl"`
+	// State is nil for a charger that has never run.
+	State *charger.State `json:"state"`
 }

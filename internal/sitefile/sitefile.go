@@ -16,6 +16,7 @@ import (
 
 	"github.com/Amraa1/plugyard/internal/charger"
 	"github.com/Amraa1/plugyard/internal/ev"
+	"github.com/Amraa1/plugyard/internal/logfile"
 	"github.com/Amraa1/plugyard/internal/model"
 	"github.com/Amraa1/plugyard/internal/names"
 )
@@ -34,6 +35,10 @@ type Site struct {
 	// ConnectRate is the most new connections to open per second. Zero
 	// means no limit: every charger connects at once.
 	ConnectRate float64
+	// LogMaxSize and LogFiles cap the site's log: at most LogFiles files of
+	// LogMaxSize bytes. Zero stands for the defaults, 10 MB and 3.
+	LogMaxSize int64
+	LogFiles   int
 	// EVs holds the EV presets by name.
 	EVs map[string]ev.Overrides
 	// Entries are the charger entries, in the order the file lists them.
@@ -79,7 +84,13 @@ type file struct {
 	Speed       *float64          `yaml:"speed"`
 	ConnectRate *float64          `yaml:"connectRate"`
 	EVs         map[string]fileEV `yaml:"evs"`
+	Log         *fileLog          `yaml:"log"`
 	Chargers    yaml.Node         `yaml:"chargers"`
+}
+
+type fileLog struct {
+	MaxSize string `yaml:"maxSize"`
+	Files   *int   `yaml:"files"`
 }
 
 type fileCSMS struct {
@@ -207,6 +218,25 @@ func Parse(data []byte, baseDir string, lookupEnv func(string) (string, bool)) (
 		site.ConnectRate = *f.ConnectRate
 		if site.ConnectRate < 0 {
 			problem("connectRate cannot be negative; use 0 for no limit")
+		}
+	}
+
+	if f.Log != nil {
+		if f.Log.MaxSize != "" {
+			size, err := logfile.ParseSize(f.Log.MaxSize)
+			switch {
+			case err != nil:
+				problem("log.maxSize: %v", err)
+			case size < logfile.MinSize:
+				problem("log.maxSize must be at least 1kB")
+			}
+			site.LogMaxSize = size
+		}
+		if f.Log.Files != nil {
+			site.LogFiles = *f.Log.Files
+			if site.LogFiles < 1 || site.LogFiles > logfile.MaxFiles {
+				problem("log.files must be from 1 to %d", logfile.MaxFiles)
+			}
 		}
 	}
 
