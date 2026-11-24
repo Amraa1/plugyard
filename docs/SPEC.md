@@ -73,7 +73,7 @@ Rules that apply to every command:
 - Charger commands see chargers from all sites. `-s, --site <name>` narrows to one site.
 - The same charge point ID may exist in two sites. A command whose charger argument is ambiguous fails and asks for `-s` or the charger's name. A name is never ambiguous.
 - Output is labelled with the charge point ID, since that is what the CSMS shows. The name is shown by `ps`.
-- `--format json` is available on `ps`, `site ls`, `inspect`, `stats`, `logs`, `site logs`, `info`, `exec`, `start`, `stop`, `restart`, `kill` and `rm`. It prints one JSON object per line, as Docker does. `inspect` and `info` print a single object. Fields are only ever added to these objects, never renamed or removed.
+- `--format json` is available on `ps`, `site ls`, `inspect`, `stats`, `logs`, `site logs`, `info`, `scenario run`, `exec`, `start`, `stop`, `restart`, `kill` and `rm`. It prints one JSON object per line, as Docker does. `inspect` and `info` print a single object. Fields are only ever added to these objects, never renamed or removed.
 - Output is colored when it goes to a terminal: green for `ok`, `online`, `running` and `Charging`; yellow for `connecting`, `Preparing`, `Finishing` and the suspended statuses; red for `failed`, `offline` and `Faulted`. Color is never the only signal, and it is switched off when output is piped or redirected or when the `NO_COLOR` environment variable is set.
 - Exit codes: `0` success, `1` runtime failure, `2` usage or validation error.
 - Starting a site whose name is already running fails with exit code `1`. This includes a second `plugyard run` with the same charge point ID.
@@ -156,8 +156,10 @@ plugyard exec <charger> <action> [arguments] [-n, --connector <number>]
 
 | Command | Effect |
 |---|---|
-| `plugyard scenario run <file>` | Run a scenario against a running site. |
-| `plugyard init` | Write a sample `site.yaml` and Chargerfile. |
+| `plugyard scenario run <file> [-s <site>] [--fail-fast] [--step N] [--from N] [--to N] [--speed N]` | Run a scenario against a running site (section 10). |
+| `plugyard scenario validate <file> [-s <site>]` | Check a scenario and show its plan without running it. |
+| `plugyard init [directory] [--csms <url>] [--force]` | Write a starter `site.yaml`, `Chargerfile` and `scenario.yaml`. |
+| `plugyard schema <chargerfile\|site\|scenario>` | Print the JSON schema of a file type. |
 | `plugyard version` | Print the version and supported OCPP versions. |
 | `plugyard info` | Print the version, the data directory, and every site with its status, charger counts and CSMS URLs. |
 
@@ -170,7 +172,7 @@ plugyard exec <charger> <action> [arguments] [-n, --connector <number>]
 
 ## 5. Chargerfile
 
-YAML, in a file named `Chargerfile` or `*.chargerfile.yaml`. A JSON schema is published for editor support.
+YAML, in a file named `Chargerfile` or `*.chargerfile.yaml`. A JSON schema is published for editor support (section 12).
 
 ```yaml
 vendor: Acme
@@ -498,9 +500,48 @@ steps:
     do: unplug
 ```
 
-- Each step is an `exec` action with a time offset from the start of the run.
-- A scenario runs against a site that is already up.
-- Exit code `0` when every step was delivered, non-zero otherwise.
+A scenario is a name and a list of steps. A step has three required fields:
+
+| Field | Meaning |
+|---|---|
+| `at` | When the step runs, counted from the start of the run: `0s`, `30s`, `10m`, `1h30m` |
+| `charger` | A charge point ID, a name, or a pattern, as for `exec` |
+| `do` | The action |
+
+What a step can do, with the options that go with it:
+
+| `do` | Options | Same as |
+|---|---|---|
+| `plug` | `connector`, `ev`, `battery`, `soc`, `maxPower`, `targetSoc`, `curve` | `exec <charger> plug` |
+| `unplug` | `connector` | `exec <charger> unplug` |
+| `tap` | `tag` (required), `connector` | `exec <charger> tap <tag>` |
+| `fault` | `code` (required), `info`, `vendorCode`, `connector` (0 is the whole charger) | `exec <charger> fault <code>` |
+| `clear` | `connector` | `exec <charger> clear` |
+| `offline` | `for` | `exec <charger> offline` |
+| `online`, `reboot` | | `exec <charger> online`, `reboot` |
+| `stop`, `start`, `restart`, `kill` | | `plugyard stop <charger>` and so on |
+
+- Steps are written in the order they run. A step whose `at` is earlier than the step above it is an error. Steps with the same `at` run one after the other, in file order.
+- Unknown fields, and an option on an action it does not apply to, are errors. Every problem in the file is reported at once.
+- There are no assertions, conditions or loops.
+
+### Running a scenario
+
+- A scenario runs against a site that is already up: the one named with `-s`, or the only one running. With several running and no `-s`, the command stops and says so. Patterns match only chargers of that site.
+- Step times follow the site's speed. Against a site at `--speed 60`, a step at `30m` runs after 30 seconds, when the EVs have charged for 30 simulated minutes. `--speed N` on `scenario run` overrides the site's speed.
+- Each step prints what `exec` prints: one line per charger, and a count when there are several. `--format json` prints one object per charger and step, with `step`, `at` and `do` added to the fields `exec` gives.
+- A step that fails on a charger, or matches no charger, does not stop the run. Every failure is reported. `--fail-fast` stops at the first step that failed.
+- As for `exec`, a tag the CSMS rejects is an outcome and not a failure.
+- Ctrl+C stops the run. The site keeps running.
+- Stopping the last powered charger of a site ends the site's process, as `plugyard stop` does. A later `start` step brings the site back in the background.
+
+Exit codes: `0` when every step ran and every action succeeded; `1` when an action failed, a step matched no charger, or the run was interrupted; `2` when the file has a mistake.
+
+### Trying steps while writing one
+
+- `plugyard scenario validate <file>` checks the file and prints the plan: each step's number, time, charger and action. Nothing is sent to a charger. When a site is named with `-s`, or exactly one is running, the plan also says how many of its chargers each step would act on, and marks a step that matches none.
+- `plugyard scenario run <file> --step N` runs one step now.
+- `--from N` and `--to N` run a part of the scenario. The part starts at once, and keeps the gaps between its own steps.
 
 ## 11. Logs
 
@@ -543,7 +584,27 @@ Reading it:
 {"time":"2026-01-02T15:04:05.010+01:00","chargePointId":"CP-1","kind":"sent","text":"[2,\"7\",\"Heartbeat\",{}]","message":[2,"7","Heartbeat",{}]}
 ```
 
-## 12. Distribution
+## 12. Getting started and editor support
+
+`plugyard init` writes three files into the current directory, or the one named: `site.yaml` with three chargers, the `Chargerfile` they are made from, and `scenario.yaml`, a sample scenario.
+
+- `plugyard site up` works on them as they are. The chargers connect to the `CSMS_URL` environment variable, or to `ws://localhost:9000/ocpp` when it is not set. `--csms <url>` writes an address into the site file instead.
+- A file that exists is never overwritten: `init` stops and writes nothing. `--force` overwrites.
+- It ends by printing the next three commands to run.
+
+JSON schemas for the three file types are in the repository under `schemas/`, and inside the program:
+
+| File type | Schema | Printed by |
+|---|---|---|
+| Chargerfile | `schemas/chargerfile.schema.json` | `plugyard schema chargerfile` |
+| Site file | `schemas/site.schema.json` | `plugyard schema site` |
+| Scenario file | `schemas/scenario.schema.json` | `plugyard schema scenario` |
+
+- An editor with YAML schema support completes settings and marks mistakes when a file's first line names its schema: `# yaml-language-server: $schema=https://raw.githubusercontent.com/Amraa1/plugyard/main/schemas/site.schema.json`. The files `init` writes have that line.
+- A schema catches misspelled settings, missing required ones and wrong values. The program's own check (`site validate`, `scenario validate`) remains the full one: it also reads the Chargerfiles a site refers to and resolves environment variables.
+- The shipped examples and starter files are tested against the schemas, so the two cannot drift apart.
+
+## 13. Distribution
 
 - Prebuilt binaries for Windows, Linux and macOS, x86-64 and ARM64, attached to GitHub Releases and built automatically on each version tag
 - `go install github.com/Amraa1/plugyard@latest`

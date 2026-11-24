@@ -116,7 +116,8 @@ func (w *Writer) rotate() error {
 
 	var failed error
 	if w.files > 1 {
-		_ = os.Remove(numbered(w.path, w.files-1))
+		// Each rename replaces the file one older, so the oldest goes
+		// without a moment in which fewer files exist than are kept.
 		for n := w.files - 1; n >= 1 && failed == nil; n-- {
 			err := os.Rename(numbered(w.path, n-1), numbered(w.path, n))
 			if err != nil && !errors.Is(err, os.ErrNotExist) {

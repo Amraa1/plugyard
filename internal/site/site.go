@@ -136,6 +136,14 @@ func (s *Site) chargerConfig(m Member, saved *charger.State) charger.Config {
 // Name returns the site's name.
 func (s *Site) Name() string { return s.cfg.Name }
 
+// Speed returns how many times faster than real time the site's EVs charge.
+func (s *Site) Speed() float64 {
+	if s.cfg.Speed <= 0 {
+		return 1
+	}
+	return s.cfg.Speed
+}
+
 // CSMS returns the distinct CSMS URLs of the site, sorted.
 func (s *Site) CSMS() []string { return s.csms }
 

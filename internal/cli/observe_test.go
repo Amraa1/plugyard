@@ -197,13 +197,19 @@ func TestTheLogStaysWithinTheCapOfTheSiteFile(t *testing.T) {
 		mustRun(t, "exec", "FAST-*", "unplug")
 	}
 
-	files, _ := filepath.Glob(filepath.Join(dataDir, "*.log*"))
-	if len(files) != 2 {
-		t.Fatalf("log files = %v, want 2", files)
+	// The site is still writing, and for an instant during a rotation one of
+	// the two files is on its way to its new name.
+	var files []string
+	eventually(t, "the log is in two files", func() bool {
+		files, _ = filepath.Glob(filepath.Join(dataDir, "*.log*"))
+		return len(files) == 2
+	})
+	if more, _ := filepath.Glob(filepath.Join(dataDir, "*.log.2")); len(more) != 0 {
+		t.Errorf("a third log file was kept: %v", more)
 	}
 	for _, file := range files {
-		if info, err := os.Stat(file); err != nil || info.Size() > 2000 {
-			t.Errorf("%s holds %d bytes, want at most 2000 (%v)", filepath.Base(file), info.Size(), err)
+		if info, err := os.Stat(file); err == nil && info.Size() > 2000 {
+			t.Errorf("%s holds %d bytes, want at most 2000", filepath.Base(file), info.Size())
 		}
 	}
 	// What is left is the newest part, read across both files.

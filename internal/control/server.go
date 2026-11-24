@@ -93,6 +93,7 @@ func (srv *Server) handleInfo(w http.ResponseWriter, _ *http.Request) {
 		Chargers: srv.site.Len(),
 		Powered:  srv.site.Powered(),
 		CSMS:     srv.site.CSMS(),
+		Speed:    srv.site.Speed(),
 	})
 }
 

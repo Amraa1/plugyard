@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"sort"
 
@@ -80,12 +81,45 @@ func runPower(cmd *cobra.Command, op, arg, siteName, format string, force bool) 
 	}
 	defer w.close()
 
-	targets, err := w.match(arg, nil)
+	results, started, err := powerOn(ctx, w, op, arg, force)
 	if err != nil {
 		return err
 	}
+
+	failed := 0
+	for _, r := range results {
+		if !r.OK {
+			failed++
+		}
+	}
+	out := cmd.OutOrStdout()
+	if format == formatJSON {
+		if err := writeJSONLines(out, results); err != nil {
+			return err
+		}
+	} else {
+		writeExecResults(out, results, failed)
+		for _, info := range started {
+			reportBackground(out, w.dir, info)
+		}
+	}
+	if failed > 0 {
+		return errFailed
+	}
+	return nil
+}
+
+// powerOn powers the chargers a charger argument names on or off, or
+// removes them, and returns one result per charger, sorted by charge point
+// ID, with the sites it had to start in the background for that. An error
+// means nothing was done.
+func powerOn(ctx context.Context, w *world, op, arg string, force bool) ([]control.ExecResult, []control.Info, error) {
+	targets, err := w.match(arg, nil)
+	if err != nil {
+		return nil, nil, err
+	}
 	if len(targets) == 0 {
-		return fmt.Errorf("no charger matches %q", arg)
+		return nil, nil, fmt.Errorf("no charger matches %q", arg)
 	}
 
 	// Group the chargers by site: a running site is asked to act, and a
@@ -173,26 +207,5 @@ func runPower(cmd *cobra.Command, op, arg, siteName, format string, force bool) 
 		}
 	}
 	sort.SliceStable(results, func(i, j int) bool { return results[i].ChargePointID < results[j].ChargePointID })
-
-	failed := 0
-	for _, r := range results {
-		if !r.OK {
-			failed++
-		}
-	}
-	out := cmd.OutOrStdout()
-	if format == formatJSON {
-		if err := writeJSONLines(out, results); err != nil {
-			return err
-		}
-	} else {
-		writeExecResults(out, results, failed)
-		for _, info := range started {
-			reportBackground(out, w.dir, info)
-		}
-	}
-	if failed > 0 {
-		return errFailed
-	}
-	return nil
+	return results, started, nil
 }

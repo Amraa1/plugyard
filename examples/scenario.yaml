@@ -1,0 +1,27 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/Amraa1/plugyard/main/schemas/scenario.schema.json
+#
+# A morning at the site of examples/site.yaml: cars arrive, one charger
+# faults, another loses its network, a third loses power, and everyone leaves.
+#
+#   plugyard site up -f examples/site.yaml -d --speed 60
+#   plugyard scenario validate examples/scenario.yaml     check it and show the plan
+#   plugyard scenario run examples/scenario.yaml          30 minutes in 30 seconds
+name: morning
+steps:
+  - { at: 0s,  charger: "FAST-*", do: plug, ev: longrange }
+  - { at: 5s,  charger: "FAST-*", do: tap, tag: 04A1B2C3 }
+  - { at: 2m,  charger: LOBBY-1, do: plug, battery: 40kWh, soc: 50% }
+  - { at: 2m,  charger: LOBBY-1, do: tap, tag: 0BADF00D }
+
+  # A fault ends the transaction on FAST-003 until it is cleared.
+  - { at: 10m, charger: FAST-003, do: fault, code: GroundFailure, info: leak on L2 }
+  - { at: 12m, charger: FAST-003, do: clear }
+
+  # FAST-004 drops off the network and comes back with its messages queued.
+  - { at: 15m, charger: FAST-004, do: offline, for: 2m }
+
+  # A power cut on FAST-005, and the power coming back.
+  - { at: 20m, charger: FAST-005, do: kill }
+  - { at: 22m, charger: FAST-005, do: start }
+
+  - { at: 30m, charger: "*", do: unplug }
