@@ -26,7 +26,7 @@ One site must run hundreds to a few thousand chargers comfortably on a developer
 ### In V1
 
 - OCPP 1.6J over WebSocket
-- Feature profiles: Core (complete), Remote Trigger, Smart Charging
+- Feature profiles: Core (complete), Firmware Management, Remote Trigger, Smart Charging
 - `ws://`, and `wss://` with HTTP Basic Auth (security profile 2), with an option to skip certificate verification
 - A minimal EV model that produces realistic meter values
 - Chargers defined in files, driven by commands and by scenarios
@@ -35,7 +35,8 @@ One site must run hundreds to a few thousand chargers comfortably on a developer
 ### Not in V1
 
 - OCPP 2.0.1 (the protocol sits behind a seam so it can be added)
-- Firmware Management, Local Auth List and Reservation profiles; the charger answers `NotSupported`
+- Local Auth List and Reservation profiles; the charger answers `NotSupported`
+- Real file transfers: a firmware update and a diagnostics upload report their statuses, and no file is fetched or sent
 - Client certificates (security profile 3)
 - ISO 15118 and Plug & Charge
 - EVs as persistent entities
@@ -142,10 +143,11 @@ plugyard exec <charger> <action> [arguments] [-n, --connector <number>]
 | `offline` | `--for <duration>` | Drop the network connection; the charger keeps running |
 | `online` | | Restore the network connection |
 | `reboot` | | Reboot the charger |
+| `fail` | `<step>`: `download`, `install` or `upload` | Make the next firmware download, firmware installation or diagnostics upload fail |
 
 - `--connector` defaults to 1 for `plug`, `unplug`, `tap`, `fault` and `clear`.
 - `fault` and `clear` also accept `--connector 0`, which means the charger as a whole, as in OCPP.
-- Giving `--connector` to a whole-charger action (`offline`, `online`, `reboot`) is an error.
+- Giving `--connector` to a whole-charger action (`offline`, `online`, `reboot`, `fail`) is an error.
 - `plugyard exec --help` lists the actions and the error codes.
 - `exec` waits for the immediate outcome of the action and prints it, for example that a tag was accepted and a transaction started, or that the CSMS rejected the tag.
 - The exit code is `0` when the action was delivered, whatever the CSMS answered. A rejected tag is the CSMS's answer and not a failure. Exit code `1` means the action could not be carried out, for example because no charger matched or the connector already has an EV.
@@ -365,9 +367,10 @@ Handled automatically with no user action:
 | `UnlockConnector` | Ends a transaction on the connector with reason `UnlockCommand` and answers `Unlocked`. The EV stays until it is unplugged |
 | `ClearCache` | Empties the authorization cache |
 | `DataTransfer` | `Accepted` for the vendor IDs the Chargerfile lists under `dataTransfer`, `UnknownVendorId` otherwise |
-| `TriggerMessage` | Sends the `BootNotification`, `Heartbeat`, `MeterValues` or `StatusNotification` asked for. `NotImplemented` for the firmware and diagnostics messages |
+| `TriggerMessage` | Sends the `BootNotification`, `Heartbeat`, `MeterValues` or `StatusNotification` asked for. For `FirmwareStatusNotification` and `DiagnosticsStatusNotification` it sends where the update or the upload stands, or `Idle` |
+| `UpdateFirmware`, `GetDiagnostics` | Described under Firmware and diagnostics |
 
-- Requests of Firmware Management, Local Auth List Management and Reservation are answered with the error `NotSupported`.
+- Requests of Local Auth List Management and Reservation are answered with the error `NotSupported`.
 - `SetChargingProfile`, `ClearChargingProfile` and `GetCompositeSchedule` are handled as well, as described under Charging profiles.
 - A request whose payload cannot be read is answered with the error `FormationViolation`, and one the charger does not know with `NotImplemented`.
 - Read-only keys: `NumberOfConnectors`, `SupportedFeatureProfiles`, `GetConfigurationMaxKeys`, and the four that describe charging profiles (below).
@@ -411,6 +414,40 @@ Limits, readable by the CSMS as read-only configuration keys:
 A profile outside these limits, or one that is malformed (no periods, a first period that does not start at 0, periods out of order, a negative limit, an unknown purpose, kind or unit, a `Recurring` profile with no `recurrencyKind`), is answered `Rejected`, and the log says why.
 
 Each time the limit on a transaction changes, the charger's log says so, for example `connector 1: a charging profile limits charging to 11.04kW`.
+
+### Firmware and diagnostics
+
+The charger follows OCPP 1.6 Firmware Management, with one difference from real hardware: it never fetches or sends a file. It reports the statuses a real charger reports, so a CSMS can be tested without a file server. The `location` can be any address.
+
+**`UpdateFirmware`.** The charger answers, waits for the `retrieveDate`, and then reports with `FirmwareStatusNotification`:
+
+| Status | When | How long |
+|---|---|---|
+| `Downloading` | At the `retrieveDate`, or at once if that has passed | 10 seconds |
+| `Downloaded` | The download is done | Until no transaction is running |
+| `Installing` | No transaction is running | 10 seconds |
+| `Installed` | The installation is done | |
+
+- After `Installed` the charger reboots: it closes the connection, is away for about a second, and sends `BootNotification` with the new firmware version.
+- The new version is the file name of the `location` without its extension: `ftp://host/fw-2.4.1.bin` gives `fw-2.4.1`. It is saved with the charger and shown by `inspect`. From then on it takes precedence over the `firmware` of the Chargerfile, until the charger is removed or reset.
+- From `Downloaded` until the installation ends, every connector without a transaction reports `Unavailable` and starts nothing. Transactions that are running are left to end, as the standard recommends.
+- The two 10-second steps are shortened by the site's `--speed`. The `retrieveDate` follows the real clock, as charging profile schedules do.
+- A new `UpdateFirmware` replaces one that is waiting or downloading. During an installation it is ignored.
+- An update does not survive `stop` or `kill`: the charger comes back with the firmware it had.
+
+**`GetDiagnostics`.** The charger answers with a file name, `diagnostics-<charge point ID>-<time>.log`, and reports `Uploading`, then `Uploaded` 5 seconds later (shortened by `--speed`), with `DiagnosticsStatusNotification`. `startTime` and `stopTime` are accepted and ignored.
+
+**Failures.** `exec <charger> fail <step>` makes the next step of that kind fail:
+
+| Step | The charger reports | Then |
+|---|---|---|
+| `download` | `DownloadFailed` in place of `Downloaded` | Keeps its firmware, does not reboot |
+| `install` | `InstallationFailed` in place of `Installed` | Keeps its firmware, does not reboot, connectors are available again |
+| `upload` | `UploadFailed` in place of `Uploaded` | |
+
+- A failing download or upload is tried again as often as the `retries` of the request say, `retryInterval` seconds apart, and the failure is reported once, after the last attempt. With no `retries` it is tried once. The log shows every attempt.
+- `fail` stays set until that step has failed, or the charger is powered off. It then is spent: the next update goes through.
+- A request with no `location` is answered with the error `PropertyConstraintViolation`.
 
 ### Failures
 
@@ -476,7 +513,7 @@ When files and saved state disagree, `site up` and `run` settle it:
 
 | Edit | Effect |
 |---|---|
-| Vendor, model name or firmware version | Applied. The next `BootNotification` carries the new values, as after a firmware update |
+| Vendor, model name or firmware version | Applied. The next `BootNotification` carries the new values, as after a firmware update. A firmware version installed by `UpdateFirmware` takes precedence over the file |
 | Connector type or maximum power, behavior settings, CSMS URL, default EV | Applied |
 | A configuration key | The file wins, unless the CSMS changed that key; then saved state wins |
 | The number of connectors | The charger's saved state is reset, after confirmation. It keeps its name |
@@ -528,6 +565,7 @@ What a step can do, with the options that go with it:
 | `clear` | `connector` | `exec <charger> clear` |
 | `offline` | `for` | `exec <charger> offline` |
 | `online`, `reboot` | | `exec <charger> online`, `reboot` |
+| `fail` | `step` (required): `download`, `install` or `upload` | `exec <charger> fail <step>` |
 | `stop`, `start`, `restart`, `kill` | | `plugyard stop <charger>` and so on |
 
 - Steps are written in the order they run. A step whose `at` is earlier than the step above it is an error. Steps with the same `at` run one after the other, in file order.

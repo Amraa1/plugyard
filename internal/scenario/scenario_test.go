@@ -86,7 +86,7 @@ steps:
 		"step 3: charger is required",
 		"step 3: tag is required for tap",
 		`step 4: charger "CP-[" is not a valid pattern`,
-		`step 4: do "explode" is unknown: want one of plug, unplug, tap, fault, clear, offline, online, reboot, stop, start, restart, kill`,
+		`step 4: do "explode" is unknown: want one of plug, unplug, tap, fault, clear, offline, online, reboot, fail, stop, start, restart, kill`,
 		"step 5: at 5s is earlier than the step before it (20s); write the steps in time order",
 		`step 6: code "Exploded" is unknown`,
 		"step 7: tag does not apply to unplug",
@@ -113,6 +113,34 @@ func TestParseRejectsWhatItDoesNotKnow(t *testing.T) {
 	} {
 		if _, err := Parse([]byte(text)); err == nil || !strings.Contains(err.Error(), want) {
 			t.Errorf("%q: error = %v, want one containing %q", text, err, want)
+		}
+	}
+}
+
+func TestParseFail(t *testing.T) {
+	s, err := Parse([]byte("name: update\nsteps:\n  - { at: 0s, charger: CP-1, do: fail, step: download }\n"))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if step := s.Steps[0]; step.Request.Fail != "download" || step.Describe() != "fail download" || step.Power() {
+		t.Errorf("fail step = %+v, described as %q", step, step.Describe())
+	}
+
+	_, err = Parse([]byte("name: update\nsteps:\n" +
+		"  - { at: 0s, charger: CP-1, do: fail }\n" +
+		"  - { at: 0s, charger: CP-1, do: fail, step: coffee, connector: 1 }\n" +
+		"  - { at: 0s, charger: CP-1, do: plug, step: upload }\n"))
+	if err == nil {
+		t.Fatal("Parse succeeded")
+	}
+	for _, want := range []string{
+		"step 1: step is required for fail: one of download, install, upload",
+		`step 2: step "coffee" is unknown`,
+		"step 2: connector does not apply to fail",
+		"step 3: step does not apply to plug",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the error is missing %q:\n%v", want, err)
 		}
 	}
 }

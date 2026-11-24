@@ -222,12 +222,61 @@ const (
 )
 
 // UnsupportedActions belong to the feature profiles plugyard does not
-// implement: Firmware Management, Local Auth List Management and
-// Reservation.
+// implement: Local Auth List Management and Reservation.
 var UnsupportedActions = []string{
-	"GetDiagnostics", "UpdateFirmware",
 	"GetLocalListVersion", "SendLocalList",
 	"ReserveNow", "CancelReservation",
+}
+
+// Actions of the Firmware Management profile.
+const (
+	ActionUpdateFirmware                = "UpdateFirmware"
+	ActionGetDiagnostics                = "GetDiagnostics"
+	ActionFirmwareStatusNotification    = "FirmwareStatusNotification"
+	ActionDiagnosticsStatusNotification = "DiagnosticsStatusNotification"
+)
+
+// Statuses of a firmware update and of a diagnostics upload. Idle is used by
+// both, and only in answer to a TriggerMessage.
+const (
+	FirmwareIdle               = "Idle"
+	FirmwareDownloading        = "Downloading"
+	FirmwareDownloaded         = "Downloaded"
+	FirmwareDownloadFailed     = "DownloadFailed"
+	FirmwareInstalling         = "Installing"
+	FirmwareInstalled          = "Installed"
+	FirmwareInstallationFailed = "InstallationFailed"
+
+	DiagnosticsIdle         = "Idle"
+	DiagnosticsUploading    = "Uploading"
+	DiagnosticsUploaded     = "Uploaded"
+	DiagnosticsUploadFailed = "UploadFailed"
+)
+
+type UpdateFirmwareRequest struct {
+	Location      string `json:"location"`
+	Retries       *int   `json:"retries,omitempty"`
+	RetrieveDate  Time   `json:"retrieveDate"`
+	RetryInterval *int   `json:"retryInterval,omitempty"`
+}
+
+type GetDiagnosticsRequest struct {
+	Location      string `json:"location"`
+	Retries       *int   `json:"retries,omitempty"`
+	RetryInterval *int   `json:"retryInterval,omitempty"`
+	StartTime     *Time  `json:"startTime,omitempty"`
+	StopTime      *Time  `json:"stopTime,omitempty"`
+}
+
+type GetDiagnosticsResponse struct {
+	// FileName is empty when the charger has no diagnostics to send.
+	FileName string `json:"fileName,omitempty"`
+}
+
+// TransferStatusNotification is both FirmwareStatusNotification and
+// DiagnosticsStatusNotification: each carries only a status.
+type TransferStatusNotification struct {
+	Status string `json:"status"`
 }
 
 // Answer statuses.

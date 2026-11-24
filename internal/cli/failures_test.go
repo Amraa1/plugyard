@@ -1,8 +1,10 @@
 package cli
 
 import (
+	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Amraa1/plugyard/internal/csmstest"
 	"github.com/Amraa1/plugyard/internal/ocpp/v16"
@@ -71,6 +73,23 @@ func TestFailureActionsFromTheCommandLine(t *testing.T) {
 
 	expect("CP-1  ok  rebooting\n", "exec", "CP-1", "reboot")
 	csms.WaitForCalls(t, "CP-1", v16.ActionBootNotification, 4)
+
+	// A firmware update from the CSMS shows in inspect once it is installed.
+	eventually(t, "the charger is online again", func() bool { return strings.Contains(psRow(t, "CP-1"), " online ") })
+	update := v16.UpdateFirmwareRequest{Location: "ftp://files.example/fw-9.9.bin", RetrieveDate: v16.Time{Time: time.Now()}}
+	if err := csms.Call(context.Background(), "CP-1", v16.ActionUpdateFirmware, update, nil); err != nil {
+		t.Fatalf("UpdateFirmware: %v", err)
+	}
+	csms.WaitForCalls(t, "CP-1", v16.ActionBootNotification, 5)
+	if out := mustRun(t, "inspect", "CP-1"); !strings.Contains(out, ", firmware fw-9.9\n") {
+		t.Errorf("inspect after a firmware update:\n%s", out)
+	}
+
+	expect("CP-1  ok  the next firmware download will fail\n", "exec", "CP-1", "fail", "download")
+	code, stdout, _ = run("exec", "CP-1", "fail", "download")
+	if code != ExitFailure || !strings.Contains(stdout, "CP-1  failed  the next firmware download will fail already") {
+		t.Errorf("a second fail download: exit %d, output %q", code, stdout)
+	}
 }
 
 func TestFailureActionUsageErrors(t *testing.T) {
@@ -88,7 +107,10 @@ func TestFailureActionUsageErrors(t *testing.T) {
 		{[]string{"exec", "CP-1", "online", "--for", "5s"}, "--for only applies to offline"},
 		{[]string{"exec", "CP-1", "offline", "--for", "0s"}, "--for must be a time above zero"},
 		{[]string{"exec", "CP-1", "clear", "--info", "x"}, "--info and --vendor-code only apply to fault"},
-		{[]string{"exec", "CP-1", "explode"}, `unknown action "explode": want plug, unplug, tap, fault, clear, offline, online or reboot`},
+		{[]string{"exec", "CP-1", "explode"}, `unknown action "explode": want plug, unplug, tap, fault, clear, offline, online, reboot or fail`},
+		{[]string{"exec", "CP-1", "fail"}, "fail takes exactly one argument, the step that fails: download, install, upload"},
+		{[]string{"exec", "CP-1", "fail", "coffee"}, `unknown step "coffee": want download, install, upload`},
+		{[]string{"exec", "CP-1", "fail", "upload", "-n", "1"}, "fail acts on the whole charger"},
 	} {
 		code, _, stderr := run(tc.args...)
 		if code != ExitUsage || !strings.Contains(stderr, tc.want) {

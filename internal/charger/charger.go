@@ -45,6 +45,11 @@ type Timing struct {
 	Tick time.Duration
 	// Reboot is how long the charger is away when it reboots.
 	Reboot time.Duration
+	// Download, Install and Upload are how long a firmware download, a
+	// firmware installation and a diagnostics upload take at speed 1.
+	Download time.Duration
+	Install  time.Duration
+	Upload   time.Duration
 }
 
 // Config describes one charger.
@@ -100,6 +105,9 @@ const (
 	defaultTick              = time.Second
 	defaultMeterSaveInterval = 5 * time.Second
 	defaultReboot            = time.Second
+	defaultDownload          = 10 * time.Second
+	defaultInstall           = 10 * time.Second
+	defaultUpload            = 5 * time.Second
 )
 
 // Connection states, as shown by "plugyard ps".
@@ -126,7 +134,7 @@ var defaultConfig = map[string]string{
 	"LocalAuthorizeOffline":           "true",
 	"AuthorizeRemoteTxRequests":       "false",
 	// What the charger is.
-	"SupportedFeatureProfiles": "Core,RemoteTrigger,SmartCharging",
+	"SupportedFeatureProfiles": "Core,FirmwareManagement,RemoteTrigger,SmartCharging",
 	"GetConfigurationMaxKeys":  "500",
 	// What the charger accepts in charging profiles.
 	"ChargeProfileMaxStackLevel":              strconv.Itoa(maxStackLevel),
@@ -182,6 +190,15 @@ type Charger struct {
 	nextTxRef   int
 	// profiles holds the charging profiles the CSMS installed.
 	profiles []InstalledProfile
+	// installed is the firmware a firmware update installed, or "" while the
+	// charger runs the firmware of its model.
+	installed string
+	// firmware and diagnostics are the firmware update and the diagnostics
+	// upload under way, or nil.
+	firmware    *transfer
+	diagnostics *transfer
+	// failing holds the steps of those that were told to fail.
+	failing map[string]bool
 
 	// sent and received count the OCPP messages since the charger was
 	// powered on.
@@ -257,6 +274,15 @@ func New(cfg Config) (*Charger, error) {
 	if cfg.Timing.Reboot <= 0 {
 		cfg.Timing.Reboot = defaultReboot
 	}
+	if cfg.Timing.Download <= 0 {
+		cfg.Timing.Download = defaultDownload
+	}
+	if cfg.Timing.Install <= 0 {
+		cfg.Timing.Install = defaultInstall
+	}
+	if cfg.Timing.Upload <= 0 {
+		cfg.Timing.Upload = defaultUpload
+	}
 
 	c := &Charger{
 		cfg:         cfg,
@@ -268,6 +294,7 @@ func New(cfg Config) (*Charger, error) {
 		connection:  Connecting,
 		zero:        &connector{status: v16.StatusAvailable, code: v16.ErrorCodeNoError},
 		authCache:   map[string]v16.IDTagInfo{},
+		failing:     map[string]bool{},
 
 		network:          make(chan struct{}, 1),
 		reboots:          make(chan reboot, 1),
@@ -415,6 +442,9 @@ func (c *Charger) powerOff() {
 		c.mu.Unlock()
 		c.event("power cut")
 		return
+	}
+	if c.firmware != nil {
+		c.event("firmware: the update is abandoned")
 	}
 	// An orderly shutdown ends the transactions even when the CSMS cannot be
 	// told now: the messages stay queued and are sent after the next boot.
@@ -666,10 +696,12 @@ func (c *Charger) waitForNetwork(ctx context.Context) bool {
 // bootRequest returns the charger's BootNotification.
 func (c *Charger) bootRequest() v16.BootNotificationRequest {
 	m := c.cfg.Model
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	return v16.BootNotificationRequest{
 		ChargePointVendor: m.Vendor,
 		ChargePointModel:  m.Name,
-		FirmwareVersion:   m.Firmware,
+		FirmwareVersion:   c.firmwareVersion(),
 	}
 }
 

@@ -15,7 +15,7 @@ import (
 
 // ProtocolVersion changes whenever requests or answers change shape. A
 // command only talks to a site that speaks the same version.
-const ProtocolVersion = 6
+const ProtocolVersion = 7
 
 const (
 	socketPrefix = "s-"
@@ -88,12 +88,13 @@ const (
 	ActionOffline = "offline"
 	ActionOnline  = "online"
 	ActionReboot  = "reboot"
+	ActionFail    = "fail"
 )
 
 // WholeCharger reports whether an action is about a charger as a whole and
 // not one of its connectors.
 func WholeCharger(action string) bool {
-	return action == ActionOffline || action == ActionOnline || action == ActionReboot
+	return action == ActionOffline || action == ActionOnline || action == ActionReboot || action == ActionFail
 }
 
 // ExecRequest asks a site to run one action on some of its chargers.
@@ -107,6 +108,8 @@ type ExecRequest struct {
 	Fault charger.Fault `json:"fault"`
 	// For is how long an offline action lasts; zero means until online.
 	For time.Duration `json:"for,omitempty"`
+	// Fail is what a fail action makes fail: one of charger.Failures.
+	Fail string `json:"fail,omitempty"`
 	// Tag is the tag presented by a tap.
 	Tag string `json:"tag,omitempty"`
 	// EVPreset names an EV preset of the site to plug in.

@@ -28,6 +28,7 @@ import (
 var Actions = []string{
 	control.ActionPlug, control.ActionUnplug, control.ActionTap,
 	control.ActionFault, control.ActionClear, control.ActionOffline, control.ActionOnline, control.ActionReboot,
+	control.ActionFail,
 	control.OpStop, control.OpStart, control.OpRestart, control.OpKill,
 }
 
@@ -73,6 +74,8 @@ func (s Step) Describe() string {
 		parts = append(parts, req.Tag)
 	case control.ActionFault:
 		parts = append(parts, req.Fault.Code)
+	case control.ActionFail:
+		parts = append(parts, req.Fail)
 	case control.ActionPlug:
 		if req.EVPreset != "" {
 			parts = append(parts, "--ev", req.EVPreset)
@@ -121,6 +124,8 @@ type fileStep struct {
 	VendorCode string `yaml:"vendorCode"`
 
 	For string `yaml:"for"`
+
+	Step string `yaml:"step"`
 }
 
 // Load reads and validates the scenario file at path.
@@ -234,7 +239,7 @@ func parseStep(fs fileStep) (Step, []error) {
 		"tag": fs.Tag != "", "ev": fs.EV != "", "battery": fs.Battery != "", "soc": fs.SoC != "",
 		"maxPower": fs.MaxPower != "", "targetSoc": fs.TargetSoC != "", "curve": fs.Curve != "",
 		"code": fs.Code != "", "info": fs.Info != "", "vendorCode": fs.VendorCode != "",
-		"for": fs.For != "", "connector": fs.Connector != nil,
+		"for": fs.For != "", "connector": fs.Connector != nil, "step": fs.Step != "",
 	}
 	allowed := map[string][]string{
 		control.ActionPlug:    {"connector", "ev", "battery", "soc", "maxPower", "targetSoc", "curve"},
@@ -243,8 +248,9 @@ func parseStep(fs fileStep) (Step, []error) {
 		control.ActionFault:   {"connector", "code", "info", "vendorCode"},
 		control.ActionClear:   {"connector"},
 		control.ActionOffline: {"for"},
+		control.ActionFail:    {"step"},
 	}[step.Do]
-	for _, option := range []string{"connector", "tag", "ev", "battery", "soc", "maxPower", "targetSoc", "curve", "code", "info", "vendorCode", "for"} {
+	for _, option := range []string{"connector", "tag", "ev", "battery", "soc", "maxPower", "targetSoc", "curve", "code", "info", "vendorCode", "for", "step"} {
 		if given[option] && !slices.Contains(allowed, option) {
 			fail("%s does not apply to %s", option, step.Do)
 		}
@@ -282,6 +288,15 @@ func parseStep(fs fileStep) (Step, []error) {
 			fail("info and vendorCode may each be 50 characters at most")
 		}
 		step.Request.Fault = charger.Fault{Code: fs.Code, Info: fs.Info, VendorCode: fs.VendorCode}
+
+	case control.ActionFail:
+		switch {
+		case fs.Step == "":
+			fail("step is required for fail: one of %s", strings.Join(charger.Failures, ", "))
+		case !slices.Contains(charger.Failures, fs.Step):
+			fail("step %q is unknown: want one of %s", fs.Step, strings.Join(charger.Failures, ", "))
+		}
+		step.Request.Fail = fs.Step
 
 	case control.ActionOffline:
 		if fs.For != "" {
