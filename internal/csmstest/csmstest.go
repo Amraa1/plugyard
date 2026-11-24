@@ -71,10 +71,12 @@ type CSMS struct {
 	interval      int
 	noSubprotocol bool
 
-	mu          sync.Mutex
-	handlers    map[string]HandlerFunc
-	conns       map[string]*ocppj.Conn
-	calls       []Call
+	mu       sync.Mutex
+	handlers map[string]HandlerFunc
+	conns    map[string]*ocppj.Conn
+	// calls holds the calls received, by charge point ID, so that looking
+	// at one charger stays cheap when thousands are connected.
+	calls       map[string][]Call
 	connects    map[string]int
 	disconnects map[string][]Disconnect
 
@@ -96,6 +98,7 @@ func Start(t testing.TB, opts ...Option) *CSMS {
 	s := &CSMS{
 		interval:    300,
 		handlers:    map[string]HandlerFunc{},
+		calls:       map[string][]Call{},
 		conns:       map[string]*ocppj.Conn{},
 		connects:    map[string]int{},
 		disconnects: map[string][]Disconnect{},
@@ -216,7 +219,7 @@ func (s *CSMS) serve(w http.ResponseWriter, r *http.Request) {
 
 func (s *CSMS) answer(id, action string, payload json.RawMessage) (any, *ocppj.CallError) {
 	s.mu.Lock()
-	s.calls = append(s.calls, Call{ChargePointID: id, Action: action, Payload: payload, Time: time.Now()})
+	s.calls[id] = append(s.calls[id], Call{ChargePointID: id, Action: action, Payload: payload, Time: time.Now()})
 	handler := s.handlers[action]
 	s.mu.Unlock()
 
@@ -230,13 +233,7 @@ func (s *CSMS) answer(id, action string, payload json.RawMessage) (any, *ocppj.C
 func (s *CSMS) Calls(chargePointID string) []Call {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	var out []Call
-	for _, call := range s.calls {
-		if call.ChargePointID == chargePointID {
-			out = append(out, call)
-		}
-	}
-	return out
+	return append([]Call(nil), s.calls[chargePointID]...)
 }
 
 // Actions returns the actions of every call received so far from one

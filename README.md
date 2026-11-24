@@ -2,7 +2,43 @@
 
 A terminal tool that simulates EV chargers, so you can develop and test a CSMS (charging station management system) without hardware. Its command line follows Docker's conventions: a file describes a kind of charger, a YAML file starts many of them together, and `ps` and `exec` operate on the running ones.
 
-> **Status: early implementation.** The V1 design is written down in [docs/SPEC.md](docs/SPEC.md). Chargers can be started one at a time or as a site of many, run transactions driven from a second terminal, keep their state when stopped, obey the CSMS, including its charging profiles, fail on demand, can be watched and scripted, and can be driven by scenario files. Prebuilt binaries are not available yet; see [What is not built yet](#what-is-not-built-yet).
+> **Beta.** plugyard does everything its [V1 specification](docs/SPEC.md) lists, and is tested against a fake CSMS and an independent OCPP library. It has not yet been used with many real CSMS products, so file formats and JSON output may still change before 1.0. Please [report](https://github.com/Amraa1/plugyard/issues) what does not work with yours.
+
+## Install
+
+**Windows**, in PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/Amraa1/plugyard/main/install.ps1 | iex
+```
+
+**Linux and macOS**:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Amraa1/plugyard/main/install.sh | sh
+```
+
+Either one downloads the latest release for your system, checks it against the release's checksums, and puts `plugyard` in your user folder: `%LOCALAPPDATA%\Programs\plugyard` on Windows (added to your PATH), `~/.local/bin` elsewhere. No administrator rights are needed. Open a new terminal afterwards and run `plugyard version`.
+
+Other ways:
+
+- **With Go 1.26 or newer:** `go install github.com/Amraa1/plugyard@latest`
+- **By hand:** download the archive for your system from the [releases page](https://github.com/Amraa1/plugyard/releases/latest), unpack it, and put `plugyard` somewhere on your PATH. Builds exist for Windows, Linux and macOS, each for x86-64 and ARM64.
+
+The programs are not code-signed. If you download one by hand, Windows SmartScreen may say it is unrecognized (choose "More info", then "Run anyway"), and macOS may refuse to open it until you run `xattr -d com.apple.quarantine ./plugyard`. The install scripts and `go install` do not trigger these warnings.
+
+### Update
+
+```sh
+plugyard update --check     # is there a newer release?
+plugyard update             # install it
+```
+
+`plugyard update` replaces the program with the latest release, after checking the download against its checksums. Your saved chargers and logs are kept. Stop running sites first (`plugyard site stop`): a site started by one version cannot be controlled by another. If you installed with `go install`, run that command again instead.
+
+### Uninstall
+
+Delete the `plugyard` program, and the data folder that `plugyard info` shows.
 
 ## Quick start
 
@@ -264,20 +300,30 @@ plugyard run Chargerfile --csms ws://localhost:9000/ocpp --id CP-1
 
 It runs in the foreground until you press Ctrl+C. Its state is saved too: run the same `--id` again and the same charger comes back. Add `--rm` for a throwaway charger that saves nothing, and `--password` (or set `PLUGYARD_CSMS_PASSWORD`) for Basic Auth over `wss://`.
 
-## What is not built yet
+## How many chargers
 
+One site of 2,000 chargers runs comfortably on a laptop. In the project's own test, 2,000 chargers connected in about one second, each ran a transaction with meter values, and all shut down cleanly, using under 400 MB for the site and the test CSMS together. The figures are in [docs/SPEC.md](docs/SPEC.md), section 9.
+
+Your CSMS may want them to arrive more gently: `plugyard site up --connect-rate 50` opens at most fifty connections a second.
+
+## What plugyard does not do
+
+- OCPP 2.0.1; only OCPP 1.6J
 - Firmware updates, local authorization lists and reservations; the charger answers these `NotSupported`
-- Prebuilt binaries
+- Deliberately broken messages, to test how a CSMS handles protocol violations
+- Client certificates (security profile 3)
 
 ## Building from source
 
 Requires Go 1.26 or newer.
 
 ```sh
-go build ./cmd/plugyard
+go build .
 ./plugyard version
 go test ./...
 ```
+
+`PLUGYARD_SCALE=2000 go test -run TestScale -v ./internal/cli` runs the 2,000-charger test. A release is made by pushing a version tag such as `v0.2.0`; [GoReleaser](https://goreleaser.com) then builds and publishes the six archives.
 
 ## Documentation
 

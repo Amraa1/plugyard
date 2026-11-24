@@ -1,0 +1,42 @@
+# Builds a release when a version tag is pushed: see .github/workflows/release.yml.
+# Check a change to this file with:  goreleaser release --snapshot --clean
+version: 2
+
+project_name: plugyard
+
+builds:
+  - id: plugyard
+    main: .
+    binary: plugyard
+    env:
+      - CGO_ENABLED=0
+    goos: [linux, windows, darwin]
+    goarch: [amd64, arm64]
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X github.com/Amraa1/plugyard/internal/buildinfo.version={{ .Tag }}
+
+archives:
+  - id: plugyard
+    # No version in the name, so that the latest build of a system has one
+    # fixed address: .../releases/latest/download/plugyard_linux_amd64.tar.gz.
+    # The install scripts and "plugyard update" rely on these names.
+    name_template: "plugyard_{{ .Os }}_{{ .Arch }}"
+    formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    files:
+      - LICENSE
+      - README.md
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  use: github-native
+
+release:
+  # A tag such as v0.2.0-beta.1 is published as a pre-release.
+  prerelease: auto

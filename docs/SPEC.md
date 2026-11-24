@@ -162,6 +162,7 @@ plugyard exec <charger> <action> [arguments] [-n, --connector <number>]
 | `plugyard schema <chargerfile\|site\|scenario>` | Print the JSON schema of a file type. |
 | `plugyard version` | Print the version and supported OCPP versions. |
 | `plugyard info` | Print the version, the data directory, and every site with its status, charger counts and CSMS URLs. |
+| `plugyard update [--check]` | Replace the program with the latest release (section 13). |
 
 `stats` behaves as `docker stats` does:
 
@@ -447,6 +448,12 @@ Failures are caused on purpose, with actions, so that a CSMS can be tested again
 - The database is accessed through a pure-Go SQLite driver so that all platforms build without a C compiler.
 - The `PLUGYARD_DATA_DIR` environment variable overrides the data directory. Socket paths are limited to about 100 characters, so a data directory with a very long path is refused with a message saying so.
 
+Scale:
+
+- One site of 2,000 chargers is a tested size. Each charger is a few lightweight threads of one process and one connection.
+- Measured with the project's scale test, in which the site and a test CSMS share one process: 2,000 chargers were all online after about 1 second, each completed a transaction with meter values within 3 seconds, and all shut down in an orderly way in under half a second. The process had taken about 300 MB from the system on Linux and under 400 MB on Windows.
+- The same test runs with 200 chargers on every change, and with 2,000 before a release (`PLUGYARD_SCALE=2000`).
+
 Saved per charger:
 
 - Its name
@@ -606,6 +613,30 @@ JSON schemas for the three file types are in the repository under `schemas/`, an
 
 ## 13. Distribution
 
-- Prebuilt binaries for Windows, Linux and macOS, x86-64 and ARM64, attached to GitHub Releases and built automatically on each version tag
-- `go install github.com/Amraa1/plugyard@latest`
-- Homebrew, Scoop and winget later, on demand
+Releases:
+
+- A release is made by pushing a version tag such as `v0.2.0`. GoReleaser then builds the program for Windows, Linux and macOS, each for x86-64 and ARM64, and attaches the six archives and a `checksums.txt` to a GitHub Release.
+- An archive is named `plugyard_<os>_<arch>`, with `.zip` for Windows and `.tar.gz` for the others, and no version in the name. The latest build of a system therefore has one fixed address, `https://github.com/Amraa1/plugyard/releases/latest/download/plugyard_linux_amd64.tar.gz`, which the install scripts and `plugyard update` rely on.
+- Versions follow semantic versioning. Before 1.0, file formats and JSON output may change between minor versions. A tag with a suffix, such as `v0.2.0-beta.1`, is published as a pre-release.
+- The programs are not code-signed.
+
+Ways to install:
+
+| Way | What it does |
+|---|---|
+| `install.ps1` (Windows), `install.sh` (Linux, macOS) | Downloads the latest release for the system, checks it against `checksums.txt`, and puts the program in the user's folder: `%LOCALAPPDATA%\Programs\plugyard`, which is added to the user's PATH, or `~/.local/bin`. Running it again updates |
+| `go install github.com/Amraa1/plugyard@latest` | Builds from source with Go |
+| By hand | Download an archive from the releases page and unpack it |
+
+- `PLUGYARD_INSTALL_DIR` names another folder for the install scripts, and `PLUGYARD_NO_MODIFY_PATH` keeps `install.ps1` from changing the PATH.
+- Homebrew, Scoop and winget later, on demand.
+
+`plugyard update`:
+
+- Finds the latest release, and stops if the installed version is that one or newer. `--check` only reports.
+- Refuses while any site is running, and says which: a site started by one version cannot be controlled by another, since the channel between them may change.
+- Downloads the archive for the system it runs on, checks it against the release's `checksums.txt`, and replaces the program. If anything fails, the program that was there stays.
+- On Windows a running program cannot be deleted, so the old one is renamed and removed the next time plugyard starts.
+- Saved state and logs are kept.
+- `PLUGYARD_RELEASES_URL` points the install scripts and `plugyard update` at another copy of the releases, such as a mirror inside a company network.
+- The checksum guards against a damaged download. It does not prove who published the release.
