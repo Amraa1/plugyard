@@ -184,6 +184,10 @@ func inspect(now control.ChargerState, details control.Inspection) inspection {
 	saved := map[int]charger.ConnectorState{}
 	if st := details.State; st != nil {
 		view.Fault = st.Fault
+		// A firmware update replaces the firmware the model came with.
+		if st.Firmware != "" {
+			view.Model.Firmware = st.Firmware
+		}
 		view.ChargingProfiles = append(view.ChargingProfiles, st.Profiles...)
 		view.AuthorizationCache = st.AuthCache
 		for _, q := range st.Outbox {

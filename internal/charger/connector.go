@@ -30,6 +30,9 @@ type connector struct {
 	// says it is to become so when its transaction ends.
 	inoperative bool
 	scheduled   bool
+	// updating says the charger keeps the connector free for a firmware
+	// installation.
+	updating bool
 	// meterWh is the meter register. It only counts up and is not reset
 	// between transactions.
 	meterWh float64
@@ -178,7 +181,7 @@ func (k *connector) currentStatus() string {
 		return v16.StatusSuspendedEVSE
 	case k.tx != nil:
 		return v16.StatusCharging
-	case k.inoperative:
+	case k.inoperative || k.updating:
 		return v16.StatusUnavailable
 	case k.ev != nil && k.finishing:
 		return v16.StatusFinishing
@@ -252,6 +255,8 @@ func (c *Charger) blocked(k *connector) string {
 		return "the connector has a fault (" + k.fault.Code + "); clear it first"
 	case k.inoperative:
 		return "the CSMS has made the connector unavailable"
+	case k.updating:
+		return "the charger is installing firmware"
 	}
 	return ""
 }
@@ -708,6 +713,7 @@ func (c *Charger) tick(now time.Time) {
 	if c.off || c.killed {
 		return
 	}
+	c.stepTransfers(now)
 
 	for _, k := range c.connectors {
 		tx := k.tx

@@ -35,6 +35,9 @@ type State struct {
 	AuthCache map[string]v16.IDTagInfo `json:"authCache,omitempty"`
 	// Profiles holds the charging profiles the CSMS installed.
 	Profiles []InstalledProfile `json:"profiles,omitempty"`
+	// Firmware is the firmware a firmware update installed. It is empty
+	// while the charger runs the firmware of its model.
+	Firmware string `json:"firmware,omitempty"`
 }
 
 // ConnectorState is the saved state of one connector.
@@ -128,7 +131,7 @@ func (c *Charger) State() State {
 
 // state returns the charger's state as of now. The caller holds c.mu.
 func (c *Charger) state(now time.Time) State {
-	st := State{SavedAt: now, NextTxRef: c.nextTxRef, Fault: c.zero.fault, Inoperative: c.zero.inoperative}
+	st := State{SavedAt: now, NextTxRef: c.nextTxRef, Fault: c.zero.fault, Inoperative: c.zero.inoperative, Firmware: c.installed}
 	if len(c.authCache) > 0 {
 		st.AuthCache = make(map[string]v16.IDTagInfo, len(c.authCache))
 		for tag, info := range c.authCache {
@@ -181,6 +184,7 @@ func (c *Charger) state(now time.Time) State {
 // charger is powered on.
 func (c *Charger) restore(st *State) {
 	c.nextTxRef = st.NextTxRef
+	c.installed = st.Firmware
 	c.zero.fault, c.zero.inoperative = st.Fault, st.Inoperative
 	c.zero.status, c.zero.code = c.zero.currentStatus(), c.zero.errorCode()
 	for tag, info := range st.AuthCache {

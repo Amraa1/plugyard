@@ -236,6 +236,8 @@ func (srv *Server) runAction(ctx context.Context, c *charger.Charger, req ExecRe
 		return c.Online()
 	case ActionReboot:
 		return c.Reboot()
+	case ActionFail:
+		return c.Fail(req.Fail)
 	default:
 		return "", fmt.Errorf("unknown action %q", req.Action)
 	}

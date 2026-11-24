@@ -140,6 +140,11 @@ func Start(t testing.TB, opts ...Option) *CSMS {
 	s.Handle(v16.ActionMeterValues, func(string, json.RawMessage) (any, *ocppj.CallError) {
 		return v16.MeterValuesResponse{}, nil
 	})
+	for _, action := range []string{v16.ActionFirmwareStatusNotification, v16.ActionDiagnosticsStatusNotification} {
+		s.Handle(action, func(string, json.RawMessage) (any, *ocppj.CallError) {
+			return struct{}{}, nil
+		})
+	}
 
 	s.srv = httptest.NewServer(http.HandlerFunc(s.serve))
 	t.Cleanup(func() {

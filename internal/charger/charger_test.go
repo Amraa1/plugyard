@@ -83,6 +83,9 @@ func powerOn(t *testing.T, cfg charger.Config) *running {
 		ReconnectMax: 50 * time.Millisecond,
 		Tick:         10 * time.Millisecond,
 		Reboot:       20 * time.Millisecond,
+		Download:     40 * time.Millisecond,
+		Install:      40 * time.Millisecond,
+		Upload:       40 * time.Millisecond,
 	}
 
 	c, err := charger.New(cfg)

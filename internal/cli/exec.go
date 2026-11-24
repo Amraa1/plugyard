@@ -50,7 +50,9 @@ func newExec() *cobra.Command {
 			"  clear               Recover from the fault\n" +
 			"  offline             Take the network connection down; the charger keeps running\n" +
 			"  online              Restore the network connection\n" +
-			"  reboot              Reboot the charger\n\n" +
+			"  reboot              Reboot the charger\n" +
+			"  fail <step>         Make the next firmware download or installation, or the next\n" +
+			"                      diagnostics upload, fail: " + strings.Join(charger.Failures, ", ") + "\n\n" +
 			"Error codes for fault: " + strings.Join(v16.ErrorCodes[:8], ", ") + ",\n" +
 			"  " + strings.Join(v16.ErrorCodes[8:], ", ") + "\n\n" +
 			"fault and clear act on connector 1 unless -n says otherwise; -n 0 means the\n" +
@@ -63,7 +65,8 @@ func newExec() *cobra.Command {
 			"  plugyard exec CP-1 fault OverCurrentFailure -n 2 --info \"phase L2\"\n" +
 			"  plugyard exec CP-1 clear\n" +
 			"  plugyard exec 'FAST-*' offline --for 30s\n" +
-			"  plugyard exec CP-1 reboot",
+			"  plugyard exec CP-1 reboot\n" +
+			"  plugyard exec CP-1 fail download",
 		Args: cobra.MinimumNArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := checkFormat(format); err != nil {
@@ -119,12 +122,20 @@ func newExec() *cobra.Command {
 					return &UsageError{Err: fmt.Errorf("unknown error code %q: OCPP 1.6 has %s", rest[0], strings.Join(v16.ErrorCodes, ", "))}
 				}
 				req.Fault = charger.Fault{Code: rest[0], Info: info, VendorCode: vendor}
+			case control.ActionFail:
+				if err := wantArgs(1, "exactly one argument, the step that fails: "+strings.Join(charger.Failures, ", ")); err != nil {
+					return err
+				}
+				if !slices.Contains(charger.Failures, rest[0]) {
+					return &UsageError{Err: fmt.Errorf("unknown step %q: want %s", rest[0], strings.Join(charger.Failures, ", "))}
+				}
+				req.Fail = rest[0]
 			case control.ActionClear, control.ActionOnline, control.ActionReboot, control.ActionOffline:
 				if err := wantArgs(0, "no arguments"); err != nil {
 					return err
 				}
 			default:
-				return &UsageError{Err: fmt.Errorf("unknown action %q: want plug, unplug, tap, fault, clear, offline, online or reboot", action)}
+				return &UsageError{Err: fmt.Errorf("unknown action %q: want plug, unplug, tap, fault, clear, offline, online, reboot or fail", action)}
 			}
 			if (info != "" || vendor != "") && action != control.ActionFault {
 				return &UsageError{Err: errors.New("--info and --vendor-code only apply to fault")}

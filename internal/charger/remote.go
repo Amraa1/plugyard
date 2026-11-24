@@ -144,6 +144,27 @@ func (c *Charger) handle(_ context.Context, action string, payload json.RawMessa
 			return nil, malformed
 		}
 		return c.compositeSchedule(req), nil
+
+	case v16.ActionUpdateFirmware:
+		var req v16.UpdateFirmwareRequest
+		if !decode(&req) {
+			return nil, malformed
+		}
+		if err := c.updateFirmware(req); err != nil {
+			return nil, err
+		}
+		return struct{}{}, nil
+
+	case v16.ActionGetDiagnostics:
+		var req v16.GetDiagnosticsRequest
+		if !decode(&req) {
+			return nil, malformed
+		}
+		resp, err := c.getDiagnostics(req)
+		if err != nil {
+			return nil, err
+		}
+		return resp, nil
 	}
 
 	if slices.Contains(v16.UnsupportedActions, action) {
@@ -365,9 +386,19 @@ func (c *Charger) triggerMessage(req v16.TriggerMessageRequest) string {
 				c.enqueueStatus(k)
 			}
 		})
+	case v16.ActionFirmwareStatusNotification:
+		c.after(func() {
+			c.mu.Lock()
+			defer c.mu.Unlock()
+			c.notify(v16.ActionFirmwareStatusNotification, c.firmwareStatus())
+		})
+	case v16.ActionDiagnosticsStatusNotification:
+		c.after(func() {
+			c.mu.Lock()
+			defer c.mu.Unlock()
+			c.notify(v16.ActionDiagnosticsStatusNotification, c.diagnosticsStatus())
+		})
 	default:
-		// DiagnosticsStatusNotification and FirmwareStatusNotification
-		// belong to a profile the charger does not have.
 		return v16.StatusNotImplemented
 	}
 	return v16.StatusAccepted

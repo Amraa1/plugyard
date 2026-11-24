@@ -27,7 +27,7 @@
           },
           "do": {
             "description": "The action: one of the actions of \"plugyard exec\", or stop, start, restart or kill.",
-            "enum": ["plug", "unplug", "tap", "fault", "clear", "offline", "online", "reboot", "stop", "start", "restart", "kill"]
+            "enum": ["plug", "unplug", "tap", "fault", "clear", "offline", "online", "reboot", "fail", "stop", "start", "restart", "kill"]
           },
           "connector": {
             "description": "The connector number. Default 1. For fault and clear, 0 means the charger as a whole.",
@@ -52,11 +52,16 @@
           },
           "info": { "description": "fault: free text about the fault. At most 50 characters.", "type": "string", "maxLength": 50 },
           "vendorCode": { "description": "fault: the vendor's own code for the fault. At most 50 characters.", "type": "string", "maxLength": 50 },
-          "for": { "description": "offline: come back online after this long, such as 30s. Without it the charger stays offline until an online step.", "type": "string" }
+          "for": { "description": "offline: come back online after this long, such as 30s. Without it the charger stays offline until an online step.", "type": "string" },
+          "step": {
+            "description": "fail: what fails next. download and install belong to a firmware update, upload to a diagnostics upload.",
+            "enum": ["download", "install", "upload"]
+          }
         },
         "allOf": [
           { "if": { "properties": { "do": { "const": "tap" } } }, "then": { "required": ["tag"] } },
-          { "if": { "properties": { "do": { "const": "fault" } } }, "then": { "required": ["code"] } }
+          { "if": { "properties": { "do": { "const": "fault" } } }, "then": { "required": ["code"] } },
+          { "if": { "properties": { "do": { "const": "fail" } } }, "then": { "required": ["step"] } }
         ]
       }
     }

@@ -243,7 +243,7 @@ plugyard kill FAST-1                     # no goodbye; PowerLoss on the next sta
 
 ### Your CSMS is in charge
 
-The charger answers the requests a CSMS sends, with no action from you: `RemoteStartTransaction`, `RemoteStopTransaction`, `Reset`, `GetConfiguration`, `ChangeConfiguration`, `ChangeAvailability`, `UnlockConnector`, `ClearCache`, `DataTransfer`, `TriggerMessage`, and the smart charging requests below. A configuration key your CSMS changes is saved, and stays changed across restarts. What each request does is in [docs/SPEC.md](docs/SPEC.md), section 8.
+The charger answers the requests a CSMS sends, with no action from you: `RemoteStartTransaction`, `RemoteStopTransaction`, `Reset`, `GetConfiguration`, `ChangeConfiguration`, `ChangeAvailability`, `UnlockConnector`, `ClearCache`, `DataTransfer`, `TriggerMessage`, and the smart charging and firmware requests below. A configuration key your CSMS changes is saved, and stays changed across restarts. What each request does is in [docs/SPEC.md](docs/SPEC.md), section 8.
 
 ### Smart charging
 
@@ -262,6 +262,26 @@ Send your CSMS's charging profiles and watch the charger obey them:
 - Schedules follow the real clock even with `--speed`, so for a quick test send periods a few seconds long.
 
 Profiles are saved with the charger. The rules are in [docs/SPEC.md](docs/SPEC.md), section 8.
+
+### Firmware updates and diagnostics
+
+Press "update firmware" in your CSMS and watch the charger go through it. No file server is needed: the charger never fetches or sends a file, it reports what a real charger reports.
+
+| Your CSMS sends | The charger |
+|---|---|
+| `UpdateFirmware` for `ftp://host/fw-2.4.1.bin` | Reports `Downloading`, `Downloaded`, `Installing` and `Installed`, then reboots and sends `BootNotification` with firmware `fw-2.4.1` |
+| `UpdateFirmware` during a transaction | Downloads, then waits for the transaction to end before it installs |
+| `GetDiagnostics` | Answers with a file name, then reports `Uploading` and `Uploaded` |
+
+To test the unhappy path, tell the charger what goes wrong next:
+
+```sh
+plugyard exec FAST-1 fail download       # the next update ends with DownloadFailed
+plugyard exec FAST-1 fail install        # ... or with InstallationFailed
+plugyard exec FAST-1 fail upload         # the next diagnostics upload ends with UploadFailed
+```
+
+Each step takes 10 seconds, or less with `--speed`. The details are in [docs/SPEC.md](docs/SPEC.md), section 8.
 
 ### Names
 
@@ -309,7 +329,8 @@ Your CSMS may want them to arrive more gently: `plugyard site up --connect-rate 
 ## What plugyard does not do
 
 - OCPP 2.0.1; only OCPP 1.6J
-- Firmware updates, local authorization lists and reservations; the charger answers these `NotSupported`
+- Local authorization lists and reservations; the charger answers these `NotSupported`
+- Real firmware downloads and diagnostics uploads; the charger reports the statuses and moves no file
 - Deliberately broken messages, to test how a CSMS handles protocol violations
 - Client certificates (security profile 3)
 

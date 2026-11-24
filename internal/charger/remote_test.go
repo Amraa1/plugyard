@@ -210,7 +210,7 @@ func TestGetAndChangeConfiguration(t *testing.T) {
 	if v, readonly := value(all, "VendorSpecial"); v != "blue" || readonly {
 		t.Errorf("VendorSpecial = %q readonly=%v", v, readonly)
 	}
-	if v, _ := value(all, "SupportedFeatureProfiles"); v != "Core,RemoteTrigger,SmartCharging" {
+	if v, _ := value(all, "SupportedFeatureProfiles"); v != "Core,FirmwareManagement,RemoteTrigger,SmartCharging" {
 		t.Errorf("SupportedFeatureProfiles = %q", v)
 	}
 	some := get("HeartbeatInterval", "Nope")
@@ -404,8 +404,8 @@ func TestTriggerMessage(t *testing.T) {
 	trigger(v16.ActionBootNotification, nil)
 	csms.WaitForCalls(t, "CP-1", v16.ActionBootNotification, 2)
 
-	if got := trigger("FirmwareStatusNotification", nil); got != v16.StatusNotImplemented {
-		t.Errorf("TriggerMessage FirmwareStatusNotification answered %s, want NotImplemented", got)
+	if got := trigger("MakeCoffee", nil); got != v16.StatusNotImplemented {
+		t.Errorf("TriggerMessage for an unknown message answered %s, want NotImplemented", got)
 	}
 	if got := trigger(v16.ActionStatusNotification, intPtr(9)); got != v16.StatusRejected {
 		t.Errorf("TriggerMessage for an unknown connector answered %s, want Rejected", got)
