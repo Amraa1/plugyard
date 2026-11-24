@@ -78,6 +78,9 @@ type Config struct {
 	// AllowUploads lists the hosts diagnostics may be uploaded to besides
 	// the machine the CSMS is on.
 	AllowUploads []string
+	// UploadsInsecureSkipVerify turns off the check of the certificate of
+	// an https or ftps server diagnostics are uploaded to.
+	UploadsInsecureSkipVerify bool
 	// Save, if set, is given the charger's state whenever something worth
 	// keeping has changed: at once for transactions and queued messages, and
 	// every MeterSaveInterval seconds for meter readings.

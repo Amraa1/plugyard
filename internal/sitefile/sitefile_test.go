@@ -382,4 +382,10 @@ func TestUploadsAllow(t *testing.T) {
 	if got := strings.Join(site.AllowUploads, " "); got != "files.example.com 10.0.0.5 fd12::5" {
 		t.Errorf("uploads.allow = %q", got)
 	}
+	if site.UploadsInsecureSkipVerify {
+		t.Error("certificates of upload servers are not checked, though the file does not say so")
+	}
+	if site := mustParse(t, "uploads: { insecureSkipVerify: true }\n"+body, nil); !site.UploadsInsecureSkipVerify || site.AllowUploads != nil {
+		t.Errorf("uploads.insecureSkipVerify: true gave %v and %v", site.UploadsInsecureSkipVerify, site.AllowUploads)
+	}
 }

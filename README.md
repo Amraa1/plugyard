@@ -300,7 +300,15 @@ plugyard exec FAST-1 fail upload         # the next diagnostics upload ends with
 ```
 
 - Each step of a firmware update takes 10 seconds, or less with `--speed`.
-- The diagnostics file holds what `plugyard logs FAST-1` shows, and `startTime` and `stopTime` choose the lines. It is sent with FTP, or with an HTTP `PUT` for an `http://` or `https://` location.
+- The diagnostics file holds what `plugyard logs FAST-1` shows, and `startTime` and `stopTime` choose the lines. It is sent the way the location says:
+
+  | Location | Sent with |
+  |---|---|
+  | `ftp://`, `ftps://` | FTP, or FTP with encryption |
+  | `sftp://` | SFTP, over SSH |
+  | `http://`, `https://` | An HTTP `PUT` |
+
+  For an `ftps://` or `https://` server with a self-signed certificate, add `insecureSkipVerify: true` under `uploads` in the site file.
 - **A charger uploads only to the machine its CSMS is on**, unless you allow more. Your CSMS chooses the address, so this keeps a CSMS that has been broken into from pointing the upload at your internal network. A CSMS and a file server on your own machine work with no setting. For a file server elsewhere, name it in the site file:
 
   ```yaml
@@ -378,6 +386,7 @@ Your CSMS may want them to arrive more gently: `plugyard site up --connect-rate 
 - OCPP 2.0.1; only OCPP 1.6J
 - Local authorization lists and reservations; the charger answers these `NotSupported`
 - Real firmware downloads; the charger reports the statuses and fetches no file
+- SFTP uploads that log in with a key; a password in the location is the only way
 - Deliberately broken messages, to test how a CSMS handles protocol violations
 - Client certificates (security profile 3)
 

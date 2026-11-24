@@ -53,6 +53,9 @@ type Meta struct {
 	// AllowUploads lists the hosts diagnostics may be uploaded to besides
 	// the machine the CSMS is on.
 	AllowUploads []string `json:"allowUploads,omitempty"`
+	// UploadsInsecureSkipVerify turns off the check of the certificate of
+	// an https or ftps server diagnostics are uploaded to.
+	UploadsInsecureSkipVerify bool `json:"uploadsInsecureSkipVerify,omitempty"`
 }
 
 // Spec is the snapshot of the files a charger was created from.

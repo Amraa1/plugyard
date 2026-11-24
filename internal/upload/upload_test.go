@@ -3,6 +3,7 @@ package upload
 import (
 	"bufio"
 	"context"
+	"crypto/tls"
 	"fmt"
 	"io"
 	"net"
@@ -24,13 +25,22 @@ type ftpServer struct {
 	password string
 	dir      string
 	files    map[string]string
+	// encrypted counts the files that arrived over an encrypted
+	// connection.
+	encrypted int
 }
 
 func startFTP(t *testing.T, password string) *ftpServer {
+	return startFTPOn(t, "127.0.0.1:0", password, nil, false)
+}
+
+// startFTPOn starts the server on an address. With a TLS configuration it
+// offers FTPS: after AUTH TLS, or from the first byte when implicit.
+func startFTPOn(t *testing.T, address, password string, secure *tls.Config, implicit bool) *ftpServer {
 	t.Helper()
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	ln, err := net.Listen("tcp", address)
 	if err != nil {
-		t.Fatal(err)
+		t.Skipf("cannot listen on %s: %v", address, err)
 	}
 	t.Cleanup(func() { ln.Close() })
 	s := &ftpServer{addr: ln.Addr().String(), files: map[string]string{}}
@@ -40,14 +50,18 @@ func startFTP(t *testing.T, password string) *ftpServer {
 			if err != nil {
 				return
 			}
-			go s.serve(conn, password)
+			go s.serve(conn, password, secure, implicit)
 		}
 	}()
 	return s
 }
 
-func (s *ftpServer) serve(conn net.Conn, password string) {
-	defer conn.Close()
+func (s *ftpServer) serve(conn net.Conn, password string, secure *tls.Config, implicit bool) {
+	defer func() { conn.Close() }()
+	encrypted := false
+	if implicit {
+		conn, encrypted = tls.Server(conn, secure), true
+	}
 	say := func(format string, args ...any) { fmt.Fprintf(conn, format+"\r\n", args...) }
 	say("220 ready")
 
@@ -61,7 +75,21 @@ func (s *ftpServer) serve(conn net.Conn, password string) {
 	for lines.Scan() {
 		command, arg, _ := strings.Cut(lines.Text(), " ")
 		switch strings.ToUpper(command) {
+		case "AUTH":
+			if secure == nil {
+				say("502 not implemented")
+				continue
+			}
+			say("234 go ahead")
+			conn, encrypted = tls.Server(conn, secure), true
+			lines = bufio.NewScanner(conn)
+		case "PBSZ", "PROT":
+			say("200 ok")
 		case "USER":
+			if secure != nil && !encrypted {
+				say("530 encrypt first")
+				continue
+			}
 			s.mu.Lock()
 			s.user = arg
 			s.mu.Unlock()
@@ -107,10 +135,16 @@ func (s *ftpServer) serve(conn net.Conn, password string) {
 				say("426 lost")
 				continue
 			}
+			if encrypted {
+				dc = tls.Server(dc, secure)
+			}
 			content, _ := io.ReadAll(dc)
 			dc.Close()
 			s.mu.Lock()
 			s.files[arg] = string(content)
+			if encrypted {
+				s.encrypted++
+			}
 			s.mu.Unlock()
 			say("226 stored")
 		case "QUIT":
@@ -192,9 +226,9 @@ func TestSendOverHTTP(t *testing.T) {
 
 func TestSendRefusesOtherSchemes(t *testing.T) {
 	for location, want := range map[string]string{
-		"sftp://files.example/diagnostics/": "cannot upload with sftp: want one of http, https, ftp",
-		"files.example/diagnostics/":        "has no scheme",
-		"http://[::1":                       "not a valid address",
+		"scp://files.example/diagnostics/": "cannot upload with scp: want one of http, https, ftp, ftps, sftp",
+		"files.example/diagnostics/":       "has no scheme",
+		"http://[::1":                      "not a valid address",
 	} {
 		err := Send(context.Background(), local, location, "CP-1.log", nil)
 		if err == nil || !strings.Contains(err.Error(), want) {

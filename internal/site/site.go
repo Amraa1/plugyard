@@ -55,6 +55,9 @@ type Config struct {
 	// AllowUploads lists the hosts diagnostics may be uploaded to besides
 	// the machine the CSMS is on.
 	AllowUploads []string
+	// UploadsInsecureSkipVerify turns off the check of the certificate of
+	// an https or ftps server diagnostics are uploaded to.
+	UploadsInsecureSkipVerify bool
 	// Store, if set, keeps the chargers' state.
 	Store  Store
 	Timing charger.Timing
@@ -132,7 +135,8 @@ func (s *Site) chargerConfig(m Member, saved *charger.State) charger.Config {
 		Log:        s.cfg.Log,
 		Restore:    saved,
 
-		AllowUploads: s.cfg.AllowUploads,
+		AllowUploads:              s.cfg.AllowUploads,
+		UploadsInsecureSkipVerify: s.cfg.UploadsInsecureSkipVerify,
 	}
 	if s.cfg.Diagnostics != nil {
 		id := m.ID

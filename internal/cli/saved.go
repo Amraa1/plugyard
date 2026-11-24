@@ -442,6 +442,8 @@ func serveSaved(ctx context.Context, dir string, st *store.Store, out io.Writer,
 		Diagnostics:  diagnostics,
 		AllowUploads: saved.Meta.AllowUploads,
 		Store:        st,
+
+		UploadsInsecureSkipVerify: saved.Meta.UploadsInsecureSkipVerify,
 	}, members)
 	if err != nil {
 		return err
