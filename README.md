@@ -338,7 +338,26 @@ All of it is specified in [docs/SPEC.md](docs/SPEC.md), sections 5 to 7.
 plugyard run Chargerfile --csms ws://localhost:9000/ocpp --id CP-1
 ```
 
-It runs in the foreground until you press Ctrl+C. Its state is saved too: run the same `--id` again and the same charger comes back. Add `--rm` for a throwaway charger that saves nothing, and `--password` (or set `PLUGYARD_CSMS_PASSWORD`) for Basic Auth over `wss://`.
+It runs in the foreground until you press Ctrl+C. Add `-d` to run it in the background; `plugyard stop CP-1` then shuts it down. Its state is saved too: run the same `--id` again and the same charger comes back. Add `--rm` for a throwaway charger that saves nothing, and `--password` (or set `PLUGYARD_CSMS_PASSWORD`) for Basic Auth over `wss://`.
+
+## With an AI agent
+
+Coding agents such as Claude Code and Codex can drive plugyard for you: start chargers, plug in, tap, and check what your CSMS answered.
+
+**Give the agent the skill.** In your project folder:
+
+```sh
+plugyard init --agents
+```
+
+This installs the [plugyard skill](skills/plugyard/SKILL.md) with the [skills tool](https://skills.sh), so an agent that opens a session there knows plugyard without being told. In an empty folder it also writes the starter files; in a folder that has them it only adds the skill.
+
+- It runs `npx skills add Amraa1/plugyard`, which you can also run yourself. That needs [Node.js](https://nodejs.org).
+- The skills tool asks which agents you use, and puts the skill where each of them looks.
+- The skills tool counts installs anonymously. Set `DISABLE_TELEMETRY=1` to turn that off.
+- No Node.js? Copy [`skills/plugyard`](skills/plugyard) into `.claude/skills/` (Claude Code) or `.agents/skills/` of your project.
+
+**Or just tell it.** An agent that has no skill needs one sentence: "use plugyard; run `plugyard agents` first". That command prints a guide written for agents, matching the version you have installed. The same guide is [`llms.txt`](llms.txt).
 
 ## How many chargers
 
@@ -371,6 +390,7 @@ go test ./...
 - [docs/SPEC.md](docs/SPEC.md): the V1 specification
 - [CONTEXT.md](CONTEXT.md): glossary of the project's terms
 - [docs/adr/](docs/adr/): records of the main design decisions
+- [llms.txt](llms.txt): the guide for AI agents, also printed by `plugyard agents`
 
 ## License
 

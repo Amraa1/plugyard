@@ -16,6 +16,7 @@ Terms in **bold** on first use are defined in [CONTEXT.md](../CONTEXT.md).
 
 1. **Primary: CSMS developers** running one charger or many against a local or staging CSMS.
 2. **Secondary: QA and CI**, driving the tool from scripts.
+3. **AI agents**, such as coding assistants, driving the tool for one of the above (section 12).
 
 ### Scale
 
@@ -118,7 +119,7 @@ Site commands act on the `site.yaml` in the current directory unless `-f, --file
 | `plugyard restart <charger>` | `stop` then `start`. |
 | `plugyard kill <charger>` | Power cut. State is kept as it was last saved. |
 | `plugyard rm [-f] <charger>` | Wipe the charger's saved state. Refuses a running charger unless `-f`, which stops it first. The charger is recreated fresh on the next `site up` if the site file still declares it. |
-| `plugyard run <Chargerfile> --csms <url> --id <charge point ID>` | Start one charger without a site file, in an implicit site named after the ID. |
+| `plugyard run <Chargerfile> --csms <url> --id <charge point ID> [-d]` | Start one charger without a site file, in an implicit site named after the ID. |
 
 `start`, `stop`, `restart`, `kill` and `rm` follow Docker, and print one line per charger as `exec` does:
 
@@ -128,7 +129,7 @@ Site commands act on the `site.yaml` in the current directory unless `-f, --file
 - `stop` on a charger that is already stopped succeeds. `kill` on one fails.
 - `rm` does not ask for confirmation. Removing the last charger of a site removes the site.
 
-`run` stays in the foreground printing the charger's log until interrupted, then shuts the charger down in an orderly way. Its state is saved like that of any other charger: running the same charge point ID again brings the same charger back, and `plugyard rm <ID>` wipes it. `--name <name>` gives the charger its name. `--rm` saves nothing, for a throwaway charger. `-y` answers the question `site up` asks when the Chargerfile no longer fits the saved state. It also accepts `--speed N`, with the same meaning as on `site up`, `--password <password>` for HTTP Basic Auth, which falls back to the `PLUGYARD_CSMS_PASSWORD` environment variable so the password can stay off the command line, and `--insecure-skip-verify`.
+`run` stays in the foreground printing the charger's log until interrupted, then shuts the charger down in an orderly way. With `-d, --detach` it starts the charger in the background as `site up -d` does, prints how to follow its log and how to stop it, and returns; `plugyard stop <ID>` shuts it down. `--detach` and `--rm` cannot be used together, since a charger in the background runs from its saved state. Its state is saved like that of any other charger: running the same charge point ID again brings the same charger back, and `plugyard rm <ID>` wipes it. `--name <name>` gives the charger its name. `--rm` saves nothing, for a throwaway charger. `-y` answers the question `site up` asks when the Chargerfile no longer fits the saved state. It also accepts `--speed N`, with the same meaning as on `site up`, `--password <password>` for HTTP Basic Auth, which falls back to the `PLUGYARD_CSMS_PASSWORD` environment variable so the password can stay off the command line, and `--insecure-skip-verify`.
 
 ### Actions
 
@@ -186,7 +187,8 @@ plugyard wait <charger>... <state> [-n, --connector <number>] [--timeout <time>]
 |---|---|
 | `plugyard scenario run <file> [-s <site>] [--fail-fast] [--step N] [--from N] [--to N] [--speed N]` | Run a scenario against a running site (section 10). |
 | `plugyard scenario validate <file> [-s <site>]` | Check a scenario and show its plan without running it. |
-| `plugyard init [directory] [--csms <url>] [--force]` | Write a starter `site.yaml`, `Chargerfile` and `scenario.yaml`. |
+| `plugyard init [directory] [--csms <url>] [--force] [--agents]` | Write a starter `site.yaml`, `Chargerfile` and `scenario.yaml`; with `--agents`, also install the skill for AI agents (section 12). |
+| `plugyard agents` | Print the guide for AI agents (section 12). |
 | `plugyard schema <chargerfile\|site\|scenario>` | Print the JSON schema of a file type. |
 | `plugyard version` | Print the version and nothing else, such as `v0.1.1`, so that a script can use it as it is. |
 | `plugyard info` | Print the version, the OCPP versions plugyard speaks, the Go version and system it was built for, the data directory, and every site with its status, charger counts and CSMS URLs. This is the output to include in a problem report. |
@@ -670,13 +672,33 @@ Reading it:
 {"time":"2026-01-02T15:04:05.010+01:00","chargePointId":"CP-1","kind":"sent","text":"[2,\"7\",\"Heartbeat\",{}]","message":[2,"7","Heartbeat",{}]}
 ```
 
-## 12. Getting started and editor support
+## 12. Getting started, editor support and AI agents
 
 `plugyard init` writes three files into the current directory, or the one named: `site.yaml` with three chargers, the `Chargerfile` they are made from, and `scenario.yaml`, a sample scenario.
 
 - `plugyard site up` works on them as they are. The chargers connect to the `CSMS_URL` environment variable, or to `ws://localhost:9000/ocpp` when it is not set. `--csms <url>` writes an address into the site file instead.
 - A file that exists is never overwritten: `init` stops and writes nothing. `--force` overwrites.
-- It ends by printing the next three commands to run.
+- It ends by printing the next commands to run.
+
+### AI agents
+
+AI agents, such as coding assistants that run commands for a user, are a third kind of user. Three things are made for them:
+
+| What | Where | For |
+|---|---|---|
+| The guide | `llms.txt` at the root of the repository, and built into the program: `plugyard agents` prints it | An agent that has plugyard and needs to know how to drive it: the rules that keep a session from hanging, a complete first session, how to read the output |
+| The pointer to it | The last line of `plugyard --help`: `AI agents: run "plugyard agents" for a guide written for you.` | An agent reads the help first |
+| The skill | `skills/plugyard/SKILL.md` in the repository | An agent working in a project that uses plugyard, which would not know of plugyard otherwise |
+
+- The guide printed by `plugyard agents` is the one of the installed version. Its first session is run by the tests as it is written, and every command it names is checked to exist.
+- The skill is short on purpose: its description, which is what makes an agent pick it up, the few rules that do not change between versions, and the instruction to run `plugyard agents`.
+- `plugyard init --agents` installs the skill into the project with the skills tool (`https://skills.sh`), by running `npx skills add Amraa1/plugyard` there. That tool knows where each agent keeps its skills and asks which agents to install for.
+  - It needs Node.js for `npx`. When `npx` is not found, nothing is written, and the message says to install Node.js or to copy the skill by hand.
+  - The command is printed before it runs. Without a terminal it is run as `npx --yes skills add Amraa1/plugyard --yes`, so that nothing asks.
+  - In a folder that already has the starter files, `--agents` installs only the skill and leaves the files alone.
+  - plugyard does not write the skill itself.
+- Plain `plugyard init` names `plugyard init --agents` among the next commands.
+- An MCP server is not part of plugyard; the command line and the guide take its place.
 
 JSON schemas for the three file types are in the repository under `schemas/`, and inside the program:
 

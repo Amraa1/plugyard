@@ -105,5 +105,16 @@ func newRoot() *cobra.Command {
 
 	root.AddCommand(newExec(), newInfo(), newInit(), newInspect(), newLogs(), newPs(), newRun(), newScenario(), newSchema(), newSite(), newStats(), newUninstall(), newUpdate(), newVersion(), newWait())
 	root.AddCommand(newPowerCommands()...)
+	root.AddCommand(newAgents())
+
+	// The help of the root command ends with a line for AI agents, which
+	// read the help before anything else.
+	help := root.HelpFunc()
+	root.SetHelpFunc(func(cmd *cobra.Command, args []string) {
+		help(cmd, args)
+		if cmd == root {
+			fmt.Fprintln(cmd.OutOrStdout(), "\n"+agentsHint)
+		}
+	})
 	return root
 }
