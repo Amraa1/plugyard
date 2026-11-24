@@ -160,8 +160,8 @@ plugyard exec <charger> <action> [arguments] [-n, --connector <number>]
 | `plugyard scenario validate <file> [-s <site>]` | Check a scenario and show its plan without running it. |
 | `plugyard init [directory] [--csms <url>] [--force]` | Write a starter `site.yaml`, `Chargerfile` and `scenario.yaml`. |
 | `plugyard schema <chargerfile\|site\|scenario>` | Print the JSON schema of a file type. |
-| `plugyard version` | Print the version and supported OCPP versions. |
-| `plugyard info` | Print the version, the data directory, and every site with its status, charger counts and CSMS URLs. |
+| `plugyard version` | Print the version and nothing else, such as `v0.1.1`, so that a script can use it as it is. |
+| `plugyard info` | Print the version, the OCPP versions plugyard speaks, the Go version and system it was built for, the data directory, and every site with its status, charger counts and CSMS URLs. This is the output to include in a problem report. |
 | `plugyard update [--check]` | Replace the program with the latest release (section 13). |
 
 `stats` behaves as `docker stats` does:
@@ -179,6 +179,7 @@ YAML, in a file named `Chargerfile` or `*.chargerfile.yaml`. A JSON schema is pu
 vendor: Acme
 model: FastOne 50
 firmware: 1.4.2
+ocpp: 1.6                    # the OCPP version the charger speaks
 connectors:
   - { id: 1, type: CCS2, maxPower: 50kW }
   - { id: 2, type: CHAdeMO, maxPower: 50kW }
@@ -196,6 +197,7 @@ startTag: FREEVEND           # idTag used when startOn is plug
 | Field | Meaning |
 |---|---|
 | `vendor`, `model`, `firmware` | Sent in `BootNotification` |
+| `ocpp` | The OCPP version the charger speaks. `1.6`, also written `1.6J`, is the default and the only value for now. The version belongs to the model, so that one site can later mix chargers of different versions |
 | `connectors` | Numbered outlets with type and maximum power |
 | `config` | Default values of OCPP configuration keys. A key that is not one of the charger's own is kept as text, reported by `GetConfiguration` and changeable by the CSMS |
 | `dataTransfer` | Vendor IDs for which a `DataTransfer` request from the CSMS is answered `Accepted`. Any other vendor ID is answered `UnknownVendorId` |

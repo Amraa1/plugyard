@@ -22,6 +22,10 @@
       "type": ["string", "number"],
       "maxLength": 50
     },
+    "ocpp": {
+      "description": "The OCPP version the charger speaks. 1.6, also written 1.6J, is the default and the only one for now.",
+      "enum": [1.6, "1.6", "1.6J", "1.6j"]
+    },
     "connectors": {
       "description": "The charger's connectors, numbered from 1 in order.",
       "type": "array",

@@ -52,6 +52,7 @@ func TestParseSpecExample(t *testing.T) {
 		OnEvFull: OnEvFullStop,
 		StartOn:  StartOnTap,
 		StartTag: "FREEVEND",
+		OCPP:     "1.6",
 		Voltage:  230,
 		Phases:   3,
 	}
@@ -186,6 +187,26 @@ func TestSupply(t *testing.T) {
 	} {
 		if _, err := Parse([]byte(minimal + text)); err == nil || !strings.Contains(err.Error(), want) {
 			t.Errorf("%q: error = %v, want one containing %q", text, err, want)
+		}
+	}
+}
+
+func TestOCPPVersion(t *testing.T) {
+	// 1.6 and 1.6J are two names for the same thing, and it is the default.
+	for _, line := range []string{"", "ocpp: 1.6\n", "ocpp: \"1.6\"\n", "ocpp: 1.6J\n", "ocpp: 1.6j\n"} {
+		m, err := Parse([]byte(minimal + line))
+		if err != nil || m.OCPP != "1.6" || m.OCPPVersion() != "1.6" {
+			t.Errorf("%q: OCPP = %q, %v; want 1.6", line, m.OCPP, err)
+		}
+	}
+	// A model saved before the field existed speaks 1.6 too.
+	if got := (&Model{}).OCPPVersion(); got != "1.6" {
+		t.Errorf("OCPPVersion of a model with none = %q", got)
+	}
+	for _, line := range []string{"ocpp: 2.0.1\n", "ocpp: \"1.5\"\n", "ocpp: latest\n"} {
+		_, err := Parse([]byte(minimal + line))
+		if err == nil || !strings.Contains(err.Error(), "want 1.6: it is the only OCPP version plugyard speaks for now") {
+			t.Errorf("%q: error = %v", line, err)
 		}
 	}
 }
