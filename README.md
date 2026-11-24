@@ -141,6 +141,7 @@ plugyard info                            # every site on this machine, where dat
 - **Logs** are kept on disk, so they are there for a site in the background and after a stop. A log holds the newest 30 MB; `log: { maxSize: 100MB, files: 5 }` in the site file changes that.
 - **`inspect`** shows the configuration keys with their current values, the charging profiles your CSMS installed, the EV and transaction on each connector, and the messages still queued for the CSMS.
 - **`stats`** refreshes every second in a terminal. `--no-stream` prints once.
+- **Prefer `docker container ls` to `docker ps`?** Every charger command is also in the `charger` suite: `plugyard charger ls` is `plugyard ps`, `plugyard charger logs` is `plugyard logs`, and so on.
 
 #### In scripts and CI
 

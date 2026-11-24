@@ -121,6 +121,16 @@ Site commands act on the `site.yaml` in the current directory unless `-f, --file
 | `plugyard rm [-f] <charger>` | Wipe the charger's saved state. Refuses a running charger unless `-f`, which stops it first. The charger is recreated fresh on the next `site up` if the site file still declares it. |
 | `plugyard run <Chargerfile> --csms <url> --id <charge point ID> [-d]` | Start one charger without a site file, in an implicit site named after the ID. |
 
+**The `charger` suite.** Every charger command also exists under `plugyard charger`, as Docker has `docker container ls` beside `docker ps`. A suite command is the short command under a second name, with the same flags, output and exit codes:
+
+| Suite command | Short command |
+|---|---|
+| `plugyard charger ls` | `plugyard ps` |
+| `plugyard charger exec`, `inspect`, `logs`, `stats`, `wait`, `run` | `plugyard exec`, `inspect`, `logs`, `stats`, `wait`, `run` |
+| `plugyard charger start`, `stop`, `restart`, `kill`, `rm` | `plugyard start`, `stop`, `restart`, `kill`, `rm` |
+
+The command line thus has three suites, `site`, `charger` and `api`, of which `api` is yet to come. The short commands are the ones this document uses.
+
 `start`, `stop`, `restart`, `kill` and `rm` follow Docker, and print one line per charger as `exec` does:
 
 - `stop` asks, `kill` cuts, and only `rm` deletes. A killed charger still exists and comes back with `start`.
