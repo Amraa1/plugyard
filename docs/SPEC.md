@@ -48,7 +48,7 @@ One site must run hundreds to a few thousand chargers comfortably on a developer
 - A build step, a model store or a registry
 - A background daemon or system service; automatic start after reboot
 - Through the HTTP API: anything but actions on chargers and reading them (section 14)
-- An MCP server and a Docker image; both are to follow the HTTP API
+- An MCP server, which is to follow the HTTP API
 - Assertions, conditions or loops in scenarios
 - Commands `events`, `pause`, `attach`
 - Waiting for an OCPP message or a log line; `wait` waits for a state
@@ -90,7 +90,7 @@ Site commands act on the `site.yaml` in the current directory unless `-f, --file
 
 | Command | Effect |
 |---|---|
-| `plugyard site up [-d] [-y] [--speed N] [--connect-rate N]` | Read the site file, create the site's chargers, reusing saved state, and start all of them. Runs in the foreground showing the log of every charger, as `docker compose up` does; `-d` runs it in the background. |
+| `plugyard site up [-d] [-y] [--speed N] [--connect-rate N] [--api <address>]` | Read the site file, create the site's chargers, reusing saved state, and start all of them. Runs in the foreground showing the log of every charger, as `docker compose up` does; `-d` runs it in the background. `--api` also serves the API while the site runs (section 13). |
 | `plugyard site stop` | Power off all chargers. They stay listed in `ps -a`. State is kept. |
 | `plugyard site start` | Power on every charger of a stopped site, in the background, exactly as saved. No file is read. |
 | `plugyard site down [--reset]` | Stop and remove the chargers from the listing. Saved state is kept unless `--reset` is given, which wipes it. |
@@ -762,6 +762,7 @@ Ways to install:
 | `install.ps1` (Windows), `install.sh` (Linux, macOS) | Downloads the latest release for the system, checks it against `checksums.txt`, and puts the program in the user's folder: `%LOCALAPPDATA%\Programs\plugyard`, which is added to the user's PATH, or `~/.local/bin`. Running it again updates |
 | `go install github.com/Amraa1/plugyard@latest` | Builds from source with Go |
 | By hand | Download an archive from the releases page and unpack it |
+| `docker pull amraa1/plugyard` | The container image, on Docker Hub (see below) |
 
 - `PLUGYARD_INSTALL_DIR` names another folder for the install scripts, and `PLUGYARD_NO_MODIFY_PATH` keeps `install.ps1` from changing the PATH.
 - Homebrew, Scoop and winget later, on demand.
@@ -778,6 +779,25 @@ Ways to install:
   - If something does not come back, the update is done all the same. `update` says what did not start, with the command that starts it, and exits with code `1`.
 - Downloads the archive for the system it runs on, checks it against the release's `checksums.txt`, and replaces the program. If anything fails, the program that was there stays.
 - On Windows a running program cannot be deleted, so the old one is renamed and removed the next time plugyard starts.
+
+The container image, `amraa1/plugyard` on Docker Hub:
+
+- It holds the program and nothing else to speak of: no shell and no package manager. It runs as a user that is not root. It exists for `linux/amd64` and `linux/arm64`.
+- A release `v0.2.0` is published as `amraa1/plugyard:0.2.0`, `:0.2` and `:latest`. A tag with a suffix, such as `v0.2.0-beta.1`, is published under its own version only. The release workflow builds and publishes it; nothing is published by hand.
+- A container runs `plugyard`, with `site up` when nothing else is said. Whatever follows the image's name is given to `plugyard`, so every command and flag works as on the command line.
+
+  | In the container | Holds | Give it |
+  |---|---|---|
+  | `/site` | The site file `site.yaml` and its Chargerfiles. plugyard starts in this folder | Your own folder, mounted there. Without one, a site of three chargers runs, which connects to `CSMS_URL` and uses `CSMS_PASSWORD` if set |
+  | `/data` | Saved chargers, logs and API tokens | A volume. Without one, every new container makes new chargers with meters at zero |
+  | Port `7070` | The API, when it is started | A published port, or a reverse proxy |
+
+- What a container is told comes in three ways and no others: the mounted site file, environment variables that the site file reads, and the arguments after the image's name.
+- `plugyard site up --api <address>` serves the API for as long as the site runs, so that one container can run both. It is the API of `plugyard api up`, with the same rules. `--api` and `-d` cannot be combined. `plugyard api down` stops that API and leaves the site.
+- A token is made in a container of its own that shares the volume: `docker run --rm -v <volume>:/data amraa1/plugyard api token create <name>`. Until one exists, `--api 0.0.0.0:7070` is refused.
+- `docker stop` shuts the site down in the orderly way. Transactions end with `StopTransaction` if Docker gives it the time; its default is ten seconds.
+- In a container, `plugyard update` changes nothing and names the image to pull, and `plugyard uninstall` says to remove the container with Docker. The image tells plugyard that it is one with the `PLUGYARD_CONTAINER` environment variable.
+- `examples/docker/compose.yaml` is a ready setup for a server: the site, the API, the volume, and a restart after a crash or a reboot of the server.
 
 `plugyard uninstall`:
 

@@ -1,7 +1,8 @@
 name: Release
 
 # Pushing a version tag, such as v0.1.0, publishes a release with a build for
-# each of the six systems and a checksums.txt.
+# each of the six systems and a checksums.txt, and the container image
+# amraa1/plugyard on Docker Hub.
 on:
   push:
     tags: ["v*"]
@@ -32,3 +33,61 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  image:
+    name: Container image
+    # Only once the release itself is out.
+    needs: release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+      DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+    steps:
+      # Publishing needs an access token of Docker Hub, kept as the secrets
+      # DOCKERHUB_USERNAME and DOCKERHUB_TOKEN of this repository. Without
+      # them the release still stands, and this job says what is missing.
+      - name: Check that Docker Hub is set up
+        id: hub
+        run: |
+          if [ -z "$DOCKERHUB_USERNAME" ] || [ -z "$DOCKERHUB_TOKEN" ]; then
+            echo "::warning::The image was not published: the secrets DOCKERHUB_USERNAME and DOCKERHUB_TOKEN are not set."
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@v4
+        if: steps.hub.outputs.ready == 'true'
+
+      - uses: docker/setup-buildx-action@v3
+        if: steps.hub.outputs.ready == 'true'
+
+      - uses: docker/login-action@v3
+        if: steps.hub.outputs.ready == 'true'
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      # v0.2.0 is published as 0.2.0, 0.2 and latest. A tag with a suffix,
+      # such as v0.2.0-beta.1, is published under its own version only.
+      - uses: docker/metadata-action@v5
+        if: steps.hub.outputs.ready == 'true'
+        id: meta
+        with:
+          images: amraa1/plugyard
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+
+      - uses: docker/build-push-action@v6
+        if: steps.hub.outputs.ready == 'true'
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            VERSION=${{ github.ref_name }}

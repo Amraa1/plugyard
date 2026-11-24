@@ -119,22 +119,7 @@ func newAPIUp() *cobra.Command {
 			}
 			defer server.Close()
 
-			info := server.Info()
-			tokens, _ := api.LoadTokens(dir)
-			fmt.Fprintf(out, "The API is listening at %s\n", info.URL())
-			switch {
-			case len(tokens) > 0:
-				fmt.Fprintf(out, "Every call needs a token: %s exist\n", countTokens(len(tokens)))
-			default:
-				fmt.Fprintln(out, "Calls from this machine need no token. Other machines cannot reach it.")
-			}
-			warnings := cmd.ErrOrStderr()
-			if !server.Local() && !info.TLS {
-				fmt.Fprintln(warnings, "warning: tokens travel unencrypted. Put a reverse proxy with HTTPS in front, or give --tls-cert and --tls-key.")
-			}
-			if isRoot() {
-				fmt.Fprintln(warnings, "warning: the API runs as root. Run it as a user of its own, so that a flaw in it reaches no further than plugyard's data.")
-			}
+			announceAPI(cmd, server, dir)
 
 			select {
 			case <-ctx.Done():
@@ -152,6 +137,27 @@ func newAPIUp() *cobra.Command {
 	flags.StringVar(&tlsCert, "tls-cert", "", "the certificate file to serve HTTPS with")
 	flags.StringVar(&tlsKey, "tls-key", "", "the key file of that certificate")
 	return cmd
+}
+
+// announceAPI says where an API that has just started listens, who may
+// call it, and what is unsafe about how it runs.
+func announceAPI(cmd *cobra.Command, server *api.Server, dir string) {
+	out, info := cmd.OutOrStdout(), server.Info()
+	tokens, _ := api.LoadTokens(dir)
+	fmt.Fprintf(out, "The API is listening at %s\n", info.URL())
+	switch {
+	case len(tokens) > 0:
+		fmt.Fprintf(out, "Every call needs a token (%s)\n", countTokens(len(tokens)))
+	default:
+		fmt.Fprintln(out, "Calls from this machine need no token. Other machines cannot reach it.")
+	}
+	warnings := cmd.ErrOrStderr()
+	if !server.Local() && !info.TLS {
+		fmt.Fprintln(warnings, "warning: tokens travel unencrypted. Put a reverse proxy with HTTPS in front, or give --tls-cert and --tls-key.")
+	}
+	if isRoot() {
+		fmt.Fprintln(warnings, "warning: the API runs as root. Run it as a user of its own, so that a flaw in it reaches no further than plugyard's data.")
+	}
 }
 
 func countTokens(n int) string {

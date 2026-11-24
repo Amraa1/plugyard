@@ -70,3 +70,21 @@ jobs:
 
       - name: Check install.sh
         run: sh -n install.sh
+
+  image:
+    name: Container image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Built as the release builds it, and not published.
+      - name: Build the image
+        run: docker build -t plugyard:ci --build-arg VERSION=v0.0.0-ci .
+
+      - name: Run it
+        run: |
+          test "$(docker run --rm plugyard:ci version)" = "v0.0.0-ci"
+          docker run --rm --entrypoint plugyard plugyard:ci site validate
+          test "$(docker inspect plugyard:ci --format '{{.Config.User}}')" != "" \
+            && test "$(docker inspect plugyard:ci --format '{{.Config.User}}')" != "0" \
+            && test "$(docker inspect plugyard:ci --format '{{.Config.User}}')" != "root"

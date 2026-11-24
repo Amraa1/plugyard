@@ -22,6 +22,15 @@ import (
 // such as a mirror inside a company network.
 const updateURLEnv = "PLUGYARD_RELEASES_URL"
 
+// containerEnv is set in plugyard's container image. A program in an image
+// is replaced by pulling a newer image, and removed with its container.
+const containerEnv = "PLUGYARD_CONTAINER"
+
+// containerImage is the name of plugyard's image on Docker Hub.
+const containerImage = "amraa1/plugyard"
+
+func inContainer() bool { return os.Getenv(containerEnv) != "" }
+
 // These are variables so that tests can stand in for the installed program.
 var (
 	currentVersion = buildinfo.Version
@@ -87,6 +96,16 @@ func newUpdate() *cobra.Command {
 				return nil
 			}
 			fmt.Fprintf(out, "plugyard %s is installed; %s is available.\n", current, latest)
+			if inContainer() {
+				// An update inside a container is gone with the container.
+				tag := strings.TrimPrefix(latest, "v")
+				if check {
+					fmt.Fprintf(out, "plugyard runs from a container image here. Pull the new one: docker pull %s:%s\n", containerImage, tag)
+					return nil
+				}
+				return fmt.Errorf("plugyard runs from a container image here, and an update inside the container would be lost with it. "+
+					"Pull the new image instead: docker pull %s:%s", containerImage, tag)
+			}
 			if check {
 				fmt.Fprintln(out, `Run "plugyard update" to install it.`)
 				return nil
