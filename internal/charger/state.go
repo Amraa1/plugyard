@@ -33,6 +33,8 @@ type State struct {
 	// AuthCache holds what the CSMS said about tags, when the authorization
 	// cache is on.
 	AuthCache map[string]v16.IDTagInfo `json:"authCache,omitempty"`
+	// Profiles holds the charging profiles the CSMS installed.
+	Profiles []InstalledProfile `json:"profiles,omitempty"`
 }
 
 // ConnectorState is the saved state of one connector.
@@ -124,6 +126,7 @@ func (c *Charger) state(now time.Time) State {
 			st.AuthCache[tag] = info
 		}
 	}
+	st.Profiles = append(st.Profiles, c.profiles...)
 	if len(c.overrides) > 0 {
 		st.Config = make(map[string]string, len(c.overrides))
 		for key, value := range c.overrides {
@@ -176,6 +179,13 @@ func (c *Charger) restore(st *State) {
 	for key, value := range st.Config {
 		c.overrides[key] = value
 		c.config[key] = value
+	}
+
+	// A TxProfile ended with its transaction, which does not outlive a stop.
+	for _, p := range st.Profiles {
+		if p.Profile.ChargingProfilePurpose != v16.PurposeTx {
+			c.profiles = append(c.profiles, p)
+		}
 	}
 
 	for _, q := range st.Outbox {

@@ -260,6 +260,9 @@ type StatusAnswer struct {
 type RemoteStartTransactionRequest struct {
 	ConnectorID *int   `json:"connectorId,omitempty"`
 	IDTag       string `json:"idTag"`
+	// ChargingProfile, when given, is a TxProfile for the transaction the
+	// request starts.
+	ChargingProfile *ChargingProfile `json:"chargingProfile,omitempty"`
 }
 
 type RemoteStopTransactionRequest struct {
@@ -313,4 +316,94 @@ type DataTransferResponse struct {
 type TriggerMessageRequest struct {
 	RequestedMessage string `json:"requestedMessage"`
 	ConnectorID      *int   `json:"connectorId,omitempty"`
+}
+
+// Actions of the Smart Charging profile.
+const (
+	ActionSetChargingProfile   = "SetChargingProfile"
+	ActionClearChargingProfile = "ClearChargingProfile"
+	ActionGetCompositeSchedule = "GetCompositeSchedule"
+)
+
+// More measurands plugyard can report: what a connector offers the EV.
+const (
+	MeasurandPowerOffered   = "Power.Offered"
+	MeasurandCurrentOffered = "Current.Offered"
+)
+
+// Measurands lists every measurand plugyard can report.
+var Measurands = []string{MeasurandEnergy, MeasurandPower, MeasurandSoC, MeasurandPowerOffered, MeasurandCurrentOffered}
+
+// Charging profile purposes, kinds, recurrency kinds and rate units.
+const (
+	PurposeChargePointMax = "ChargePointMaxProfile"
+	PurposeTxDefault      = "TxDefaultProfile"
+	PurposeTx             = "TxProfile"
+
+	KindAbsolute  = "Absolute"
+	KindRecurring = "Recurring"
+	KindRelative  = "Relative"
+
+	RecurrencyDaily  = "Daily"
+	RecurrencyWeekly = "Weekly"
+
+	UnitAmps  = "A"
+	UnitWatts = "W"
+)
+
+// StatusUnknown answers a ClearChargingProfile that matched no profile.
+const StatusUnknown = "Unknown"
+
+type ChargingProfile struct {
+	ChargingProfileID      int              `json:"chargingProfileId"`
+	TransactionID          *int             `json:"transactionId,omitempty"`
+	StackLevel             int              `json:"stackLevel"`
+	ChargingProfilePurpose string           `json:"chargingProfilePurpose"`
+	ChargingProfileKind    string           `json:"chargingProfileKind"`
+	RecurrencyKind         string           `json:"recurrencyKind,omitempty"`
+	ValidFrom              *Time            `json:"validFrom,omitempty"`
+	ValidTo                *Time            `json:"validTo,omitempty"`
+	ChargingSchedule       ChargingSchedule `json:"chargingSchedule"`
+}
+
+type ChargingSchedule struct {
+	// Duration is the length of the schedule in seconds.
+	Duration               *int                     `json:"duration,omitempty"`
+	StartSchedule          *Time                    `json:"startSchedule,omitempty"`
+	ChargingRateUnit       string                   `json:"chargingRateUnit"`
+	ChargingSchedulePeriod []ChargingSchedulePeriod `json:"chargingSchedulePeriod"`
+	MinChargingRate        *float64                 `json:"minChargingRate,omitempty"`
+}
+
+type ChargingSchedulePeriod struct {
+	// StartPeriod is the start of the period, in seconds from the start of
+	// the schedule.
+	StartPeriod  int     `json:"startPeriod"`
+	Limit        float64 `json:"limit"`
+	NumberPhases *int    `json:"numberPhases,omitempty"`
+}
+
+type SetChargingProfileRequest struct {
+	ConnectorID        int             `json:"connectorId"`
+	CsChargingProfiles ChargingProfile `json:"csChargingProfiles"`
+}
+
+type ClearChargingProfileRequest struct {
+	ID                     *int   `json:"id,omitempty"`
+	ConnectorID            *int   `json:"connectorId,omitempty"`
+	ChargingProfilePurpose string `json:"chargingProfilePurpose,omitempty"`
+	StackLevel             *int   `json:"stackLevel,omitempty"`
+}
+
+type GetCompositeScheduleRequest struct {
+	ConnectorID      int    `json:"connectorId"`
+	Duration         int    `json:"duration"`
+	ChargingRateUnit string `json:"chargingRateUnit,omitempty"`
+}
+
+type GetCompositeScheduleResponse struct {
+	Status           string            `json:"status"`
+	ConnectorID      *int              `json:"connectorId,omitempty"`
+	ScheduleStart    *Time             `json:"scheduleStart,omitempty"`
+	ChargingSchedule *ChargingSchedule `json:"chargingSchedule,omitempty"`
 }

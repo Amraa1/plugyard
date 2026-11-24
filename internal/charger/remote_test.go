@@ -210,7 +210,7 @@ func TestGetAndChangeConfiguration(t *testing.T) {
 	if v, readonly := value(all, "VendorSpecial"); v != "blue" || readonly {
 		t.Errorf("VendorSpecial = %q readonly=%v", v, readonly)
 	}
-	if v, _ := value(all, "SupportedFeatureProfiles"); v != "Core,RemoteTrigger" {
+	if v, _ := value(all, "SupportedFeatureProfiles"); v != "Core,RemoteTrigger,SmartCharging" {
 		t.Errorf("SupportedFeatureProfiles = %q", v)
 	}
 	some := get("HeartbeatInterval", "Nope")
@@ -432,9 +432,9 @@ func TestRequestsTheChargerDoesNotServe(t *testing.T) {
 			t.Errorf("%s answered %s, want NotSupported", action, got)
 		}
 	}
-	// Smart charging comes later.
-	if got := code("SetChargingProfile", struct{}{}); got != ocppj.ErrNotImplemented {
-		t.Errorf("SetChargingProfile answered %s, want NotImplemented", got)
+	// A request OCPP 1.6 does not have.
+	if got := code("MakeCoffee", struct{}{}); got != ocppj.ErrNotImplemented {
+		t.Errorf("MakeCoffee answered %s, want NotImplemented", got)
 	}
 	// A request whose payload does not fit.
 	if got := code(v16.ActionReset, map[string]any{"type": 5}); got != ocppj.ErrFormationViolation {

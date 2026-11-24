@@ -123,6 +123,27 @@ func (c *Charger) handle(_ context.Context, action string, payload json.RawMessa
 			return nil, malformed
 		}
 		return status(c.triggerMessage(req))
+
+	case v16.ActionSetChargingProfile:
+		var req v16.SetChargingProfileRequest
+		if !decode(&req) {
+			return nil, malformed
+		}
+		return status(c.setChargingProfile(req))
+
+	case v16.ActionClearChargingProfile:
+		var req v16.ClearChargingProfileRequest
+		if !decode(&req) {
+			return nil, malformed
+		}
+		return status(c.clearChargingProfile(req))
+
+	case v16.ActionGetCompositeSchedule:
+		var req v16.GetCompositeScheduleRequest
+		if !decode(&req) {
+			return nil, malformed
+		}
+		return c.compositeSchedule(req), nil
 	}
 
 	if slices.Contains(v16.UnsupportedActions, action) {
@@ -140,6 +161,18 @@ func (c *Charger) free(k *connector) bool {
 func (c *Charger) remoteStart(req v16.RemoteStartTransactionRequest) string {
 	if req.IDTag == "" || len(req.IDTag) > 20 {
 		return v16.StatusRejected
+	}
+	// A profile that comes with the request is for the transaction it
+	// starts, so it must be a TxProfile.
+	if p := req.ChargingProfile; p != nil {
+		problem := checkProfile(p)
+		if problem == "" && p.ChargingProfilePurpose != v16.PurposeTx {
+			problem = "the charging profile of a remote start must be a TxProfile"
+		}
+		if problem != "" {
+			c.event("the CSMS asked to start a transaction with tag %s, which was rejected: %s", req.IDTag, problem)
+			return v16.StatusRejected
+		}
 	}
 
 	c.mu.Lock()
@@ -193,7 +226,7 @@ func (c *Charger) remoteStart(req v16.RemoteStartTransactionRequest) string {
 			c.event("connector %d: the remote start came too late, the connector is no longer free", k.id)
 			return
 		}
-		c.admit(k, req.IDTag, parent)
+		c.admit(k, req.IDTag, parent, req.ChargingProfile)
 		c.reportStatus(k)
 	})
 	return v16.StatusAccepted

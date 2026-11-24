@@ -175,6 +175,8 @@ config:                      # OCPP configuration keys and their defaults
   HeartbeatInterval: 300
   MeterValueSampleInterval: 60
 dataTransfer: [com.acme]     # vendor IDs whose DataTransfer requests are accepted
+voltage: 230                 # volts; with phases, turns a limit in amps into power
+phases: 3                    # 1, 2 or 3
 onEvFull: stop               # stop | suspend
 startOn: tap                 # tap | plug
 startTag: FREEVEND           # idTag used when startOn is plug
@@ -186,6 +188,7 @@ startTag: FREEVEND           # idTag used when startOn is plug
 | `connectors` | Numbered outlets with type and maximum power |
 | `config` | Default values of OCPP configuration keys. A key that is not one of the charger's own is kept as text, reported by `GetConfiguration` and changeable by the CSMS |
 | `dataTransfer` | Vendor IDs for which a `DataTransfer` request from the CSMS is answered `Accepted`. Any other vendor ID is answered `UnknownVendorId` |
+| `voltage`, `phases` | The electrical supply, used only to turn amps into power and back: power = amps x `voltage` x `phases`. Defaults: 230 and 3. A single-phase wallbox sets `phases: 1`; a DC charger can set its DC voltage and `phases: 1` |
 | `onEvFull` | `stop` (default): end the transaction and go to `Finishing`. `suspend`: report `SuspendedEV` and keep the transaction open. |
 | `startOn` | `tap` (default): a transaction starts when a tag is presented. `plug`: it starts on plug-in using `startTag`. |
 
@@ -322,13 +325,13 @@ A curve must start at 0% and end at 100% state of charge, and its power share mu
 - A tap on a connector that is `Finishing` is refused: the EV must be unplugged before a new transaction can start.
 - When the EV reaches its target, `onEvFull` decides between `StopTransaction` followed by `Finishing`, and `SuspendedEV` with the transaction left open.
 - `StopTransaction` reasons: `Local` for a tap, `EVDisconnected` for an unplug, `Remote` for a remote stop, `DeAuthorized` as above, `SoftReset`, `HardReset` and `Reboot` for those, `UnlockCommand` for `UnlockConnector`, `PowerLoss` after a power cut, and `Other` when the EV is full or the connector faults, since OCPP 1.6 has no reason for either.
-- When a charging profile limits a connector to zero during a transaction, the connector reports `SuspendedEVSE` and returns to `Charging` when the limit rises.
+- When a charging profile limits a connector to zero during a transaction, the connector reports `SuspendedEVSE` and returns to `Charging` when the limit rises. The transaction stays open.
 
 ### Metering
 
 - Each connector has a meter register in Wh that only counts up. It is not reset between transactions; `meterStart` and `meterStop` are readings of it.
 - During a transaction the charger sends `MeterValues` every `MeterValueSampleInterval` seconds (default 60) with the measurands listed in the `MeterValuesSampledData` configuration key.
-- Supported measurands: `Energy.Active.Import.Register` (Wh), `Power.Active.Import` (W) and `SoC` (Percent). The default is the first two. A model of a DC charger adds `SoC` in its Chargerfile `config`; an AC charger cannot know the state of charge.
+- Supported measurands: `Energy.Active.Import.Register` (Wh), `Power.Active.Import` (W), `SoC` (Percent), and `Power.Offered` (W) and `Current.Offered` (A), which report what the connector offers the EV under the charging profiles in force. The default is the first two. A model of a DC charger adds `SoC` in its Chargerfile `config`; an AC charger cannot know the state of charge.
 - `StopTransaction` carries `transactionData` with the measurands in the `StopTxnSampledData` key, sampled at the start and the end of the transaction. The default is `Energy.Active.Import.Register`. Setting the key to empty sends no `transactionData`.
 - Meter readings are saved to disk every `MeterSaveInterval` seconds (default 5) during a transaction. This is plugyard's own configuration key, set like any other in a Chargerfile's `config`. It bounds the energy a power cut loses from the `meterStop` reported afterwards, as on a real meter.
 
@@ -350,9 +353,49 @@ Handled automatically with no user action:
 | `TriggerMessage` | Sends the `BootNotification`, `Heartbeat`, `MeterValues` or `StatusNotification` asked for. `NotImplemented` for the firmware and diagnostics messages |
 
 - Requests of Firmware Management, Local Auth List Management and Reservation are answered with the error `NotSupported`.
-- `SetChargingProfile`, `ClearChargingProfile` and `GetCompositeSchedule` are handled as well: a charging profile limits the power a connector offers, as described under Transactions.
+- `SetChargingProfile`, `ClearChargingProfile` and `GetCompositeSchedule` are handled as well, as described under Charging profiles.
 - A request whose payload cannot be read is answered with the error `FormationViolation`, and one the charger does not know with `NotImplemented`.
-- Read-only keys: `NumberOfConnectors`, `SupportedFeatureProfiles` and `GetConfigurationMaxKeys`.
+- Read-only keys: `NumberOfConnectors`, `SupportedFeatureProfiles`, `GetConfigurationMaxKeys`, and the four that describe charging profiles (below).
+
+### Charging profiles
+
+A charging profile is a limit over time that the CSMS puts on charging. The charger follows OCPP 1.6 Smart Charging.
+
+| Request | What the charger does |
+|---|---|
+| `SetChargingProfile` | Installs the profile, in place of one with the same ID or with the same purpose and stack level on that connector. The new limit applies at once and is saved |
+| `ClearChargingProfile` | Removes the profiles that match every field given: ID, connector, purpose, stack level. With no field it removes all. `Unknown` when none matched |
+| `GetCompositeSchedule` | Reports the limit that results from all profiles, from now for the duration asked (at most 7 days), in W or in A (W when no unit is asked). Connector 0 reports the charger as a whole |
+| `RemoteStartTransaction` with a `chargingProfile` | The profile must be a `TxProfile`; it is installed when the transaction starts |
+
+Which profile decides:
+
+- `TxProfile` is for one running transaction on one connector. It is `Rejected` when the connector has no transaction, or when it names another transaction. It is removed when its transaction ends.
+- `TxDefaultProfile` applies to every transaction. One installed on a connector overrides one installed on connector 0.
+- A `TxProfile` overrides a `TxDefaultProfile`.
+- Within one purpose on one connector, the profile with the highest stack level that has something to say at that moment decides, whatever its limit. A profile says nothing before its start, after its `duration`, and outside `validFrom` to `validTo`.
+- `ChargePointMaxProfile` is installed on connector 0 only and caps the result. Its limit is shared equally by the connectors that are charging: 30 kW with two connectors charging gives each 15 kW. A share an EV does not use is not passed on to the other connectors.
+- The connector's `maxPower` and the EV still apply: delivered power is the lowest of all of them.
+
+Schedules:
+
+- All three kinds are supported. `Absolute` starts at `startSchedule`, or when the profile is installed if it has none. `Relative` starts when the transaction starts. `Recurring` repeats from `startSchedule` every day or every week.
+- Schedules follow the real clock, whatever `--speed` is, like every other protocol timer. A period that starts at 3600 starts one real hour in.
+- A limit in W is used as given. A limit in A is turned into power with the profile's `numberPhases` when it gives one, otherwise the Chargerfile's `phases`, and the Chargerfile's `voltage`.
+- Only a limit of zero suspends charging. `minChargingRate` is accepted and ignored.
+
+Limits, readable by the CSMS as read-only configuration keys:
+
+| Key | Value |
+|---|---|
+| `ChargeProfileMaxStackLevel` | 10 |
+| `ChargingScheduleAllowedChargingRateUnit` | `Current,Power` |
+| `ChargingScheduleMaxPeriods` | 24 |
+| `MaxChargingProfilesInstalled` | 20 |
+
+A profile outside these limits, or one that is malformed (no periods, a first period that does not start at 0, periods out of order, a negative limit, an unknown purpose, kind or unit, a `Recurring` profile with no `recurrencyKind`), is answered `Rejected`, and the log says why.
+
+Each time the limit on a transaction changes, the charger's log says so, for example `connector 1: a charging profile limits charging to 11.04kW`.
 
 ### Failures
 
@@ -380,7 +423,7 @@ Failures are caused on purpose, with actions, so that a CSMS can be tested again
 
 ### Time
 
-`--speed N` (or `speed:` in the site file) multiplies the rate of EV charging and energy accumulation. Protocol timers such as heartbeat and meter value intervals run in real time, and message timestamps use the real clock.
+`--speed N` (or `speed:` in the site file) multiplies the rate of EV charging and energy accumulation. Protocol timers such as heartbeat and meter value intervals run in real time, as do charging schedules, and message timestamps use the real clock. At `--speed 60` an hour of charging takes a minute.
 
 ## 9. Running and saved state
 

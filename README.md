@@ -2,7 +2,7 @@
 
 A terminal tool that simulates EV chargers, so you can develop and test a CSMS (charging station management system) without hardware. Its command line follows Docker's conventions: a file describes a kind of charger, a YAML file starts many of them together, and `ps` and `exec` operate on the running ones.
 
-> **Status: early implementation.** The V1 design is written down in [docs/SPEC.md](docs/SPEC.md). Chargers can be started one at a time or as a site of many, run transactions driven from a second terminal, keep their state when stopped, obey the CSMS, and fail on demand. `logs` and smart charging are not built yet; see [What is not built yet](#what-is-not-built-yet).
+> **Status: early implementation.** The V1 design is written down in [docs/SPEC.md](docs/SPEC.md). Chargers can be started one at a time or as a site of many, run transactions driven from a second terminal, keep their state when stopped, obey the CSMS, including its charging profiles, and fail on demand. `logs` is not built yet; see [What is not built yet](#what-is-not-built-yet).
 
 ## Quick start: twenty chargers
 
@@ -128,7 +128,25 @@ plugyard kill FAST-1                     # no goodbye; PowerLoss on the next sta
 
 ### Your CSMS is in charge
 
-The charger answers the requests a CSMS sends, with no action from you: `RemoteStartTransaction`, `RemoteStopTransaction`, `Reset`, `GetConfiguration`, `ChangeConfiguration`, `ChangeAvailability`, `UnlockConnector`, `ClearCache`, `DataTransfer` and `TriggerMessage`. A configuration key your CSMS changes is saved, and stays changed across restarts. What each request does is in [docs/SPEC.md](docs/SPEC.md), section 8.
+The charger answers the requests a CSMS sends, with no action from you: `RemoteStartTransaction`, `RemoteStopTransaction`, `Reset`, `GetConfiguration`, `ChangeConfiguration`, `ChangeAvailability`, `UnlockConnector`, `ClearCache`, `DataTransfer`, `TriggerMessage`, and the smart charging requests below. A configuration key your CSMS changes is saved, and stays changed across restarts. What each request does is in [docs/SPEC.md](docs/SPEC.md), section 8.
+
+### Smart charging
+
+Send your CSMS's charging profiles and watch the charger obey them:
+
+| Your CSMS sends | The charger |
+|---|---|
+| `SetChargingProfile` with a 16 A limit | Delivers 11.04 kW from then on (16 A x 230 V x 3 phases) |
+| A limit of 0 | Reports `SuspendedEVSE`, keeps the transaction open, and returns to `Charging` when the limit rises |
+| `ClearChargingProfile` | Goes back to full power |
+| `GetCompositeSchedule` | Answers with the limit that results from every installed profile |
+
+- All three purposes (`TxProfile`, `TxDefaultProfile`, `ChargePointMaxProfile`), stack levels, and `Absolute`, `Relative` and `Recurring` schedules work as OCPP 1.6 describes.
+- Limits in W or in A are both accepted. For amps, tell the Chargerfile what the supply is if it is not 3 phases of 230 V: `phases: 1` for a single-phase wallbox.
+- To see the limit from your CSMS, add `Power.Offered` or `Current.Offered` to the `MeterValuesSampledData` key. The charger's log also says when a limit changes.
+- Schedules follow the real clock even with `--speed`, so for a quick test send periods a few seconds long.
+
+Profiles are saved with the charger. The rules are in [docs/SPEC.md](docs/SPEC.md), section 8.
 
 ### Names
 
@@ -170,7 +188,6 @@ It runs in the foreground until you press Ctrl+C. Its state is saved too: run th
 ## What is not built yet
 
 - `logs`, `stats` and `inspect`
-- Smart charging: `SetChargingProfile` and the requests that go with it are answered `NotImplemented`
 - Firmware updates, local authorization lists and reservations; the charger answers these `NotSupported`
 - `scenario run` and `init`
 - Prebuilt binaries

@@ -46,6 +46,29 @@ type Model struct {
 	// DataTransfer lists the vendor IDs whose DataTransfer requests from the
 	// CSMS the charger accepts.
 	DataTransfer []string
+	// Voltage and Phases turn a limit a charging profile gives in amps into
+	// power: amps x Voltage x Phases. Zero means the default.
+	Voltage float64
+	Phases  int
+}
+
+// The electrical supply assumed when a Chargerfile does not say.
+const (
+	DefaultVoltage = 230
+	DefaultPhases  = 3
+)
+
+// Supply returns the voltage and the number of phases of the charger's
+// supply.
+func (m *Model) Supply() (voltage float64, phases int) {
+	voltage, phases = m.Voltage, m.Phases
+	if voltage <= 0 {
+		voltage = DefaultVoltage
+	}
+	if phases <= 0 {
+		phases = DefaultPhases
+	}
+	return voltage, phases
 }
 
 // Connector is a numbered outlet on a charger.
@@ -106,6 +129,8 @@ type file struct {
 	StartTag   string          `yaml:"startTag"`
 	// DataTransfer lists vendor IDs.
 	DataTransfer []string `yaml:"dataTransfer"`
+	Voltage      *float64 `yaml:"voltage"`
+	Phases       *int     `yaml:"phases"`
 }
 
 type fileConnector struct {
@@ -159,6 +184,18 @@ func Parse(data []byte) (*Model, error) {
 			problem("dataTransfer[%d]: the vendor ID is empty", i)
 		} else {
 			m.DataTransfer = append(m.DataTransfer, vendor)
+		}
+	}
+
+	m.Voltage, m.Phases = DefaultVoltage, DefaultPhases
+	if f.Voltage != nil {
+		if m.Voltage = *f.Voltage; m.Voltage <= 0 {
+			problem("voltage is %v, want a number of volts above zero, such as 230", *f.Voltage)
+		}
+	}
+	if f.Phases != nil {
+		if m.Phases = *f.Phases; m.Phases < 1 || m.Phases > 3 {
+			problem("phases is %d, want 1, 2 or 3", *f.Phases)
 		}
 	}
 

@@ -4,3 +4,4 @@ model: HomeBox 7
 firmware: 2.0.1
 connectors:
   - { id: 1, type: Type2, maxPower: 7.4kW }
+phases: 1          # single phase: a 32 A charging profile limit is 7.36 kW
