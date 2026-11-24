@@ -191,6 +191,7 @@ plugyard wait <charger>... <state> [-n, --connector <number>] [--timeout <time>]
 | `plugyard version` | Print the version and nothing else, such as `v0.1.1`, so that a script can use it as it is. |
 | `plugyard info` | Print the version, the OCPP versions plugyard speaks, the Go version and system it was built for, the data directory, and every site with its status, charger counts and CSMS URLs. This is the output to include in a problem report. |
 | `plugyard update [--check]` | Replace the program with the latest release (section 13). |
+| `plugyard uninstall [-y, --yes] [--keep-data]` | Remove the program, and the saved chargers and logs (section 13). |
 
 `stats` behaves as `docker stats` does:
 
@@ -715,6 +716,23 @@ Ways to install:
 - Refuses while any site is running, and says which: a site started by one version cannot be controlled by another, since the channel between them may change.
 - Downloads the archive for the system it runs on, checks it against the release's `checksums.txt`, and replaces the program. If anything fails, the program that was there stays.
 - On Windows a running program cannot be deleted, so the old one is renamed and removed the next time plugyard starts.
+
+`plugyard uninstall`:
+
+- Removes what plugyard has on the machine:
+
+  | What | Removed |
+  |---|---|
+  | The program | Always: the file the command was started from, wherever it is |
+  | The folder of the program | Only when it is named `plugyard` and holds nothing else. `%LOCALAPPDATA%\Programs\plugyard` is such a folder; `~/.local/bin` and Go's `bin` folder are not, and stay even when empty |
+  | The entry on the user's PATH (Windows) | Only when the folder is removed |
+  | Saved chargers and logs | The files plugyard wrote in its data directory, unless `--keep-data` is given. The directory itself goes when nothing else is in it |
+
+- Shows this list with full paths and asks `Remove plugyard? [y/N]`. `-y, --yes` skips the question. Without a terminal to ask on, it removes nothing, exits with code `1` and names that flag.
+- Refuses while any site is running, and says which, as `update` does.
+- Takes the program away first. When that fails, for example for lack of permission, nothing else is removed, and the message names the file and says what to do.
+- On Windows a running program cannot be deleted, so it is renamed to `plugyard.exe.old`, and a hidden command deletes it, and the folder, a few seconds after plugyard has ended.
+- Does not undo `go install`'s module cache, and does not remove files that `plugyard init` wrote.
 - Saved state and logs are kept.
 - `PLUGYARD_RELEASES_URL` points the install scripts and `plugyard update` at another copy of the releases, such as a mirror inside a company network.
 - The checksum guards against a damaged download. It does not prove who published the release.
