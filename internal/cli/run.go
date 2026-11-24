@@ -13,6 +13,7 @@ import (
 	"github.com/Amraa1/plugyard/internal/datadir"
 	"github.com/Amraa1/plugyard/internal/model"
 	"github.com/Amraa1/plugyard/internal/names"
+	"github.com/Amraa1/plugyard/internal/sitefile"
 	"github.com/Amraa1/plugyard/internal/store"
 )
 
@@ -31,6 +32,7 @@ func newRun() *cobra.Command {
 		remove             bool
 		yes                bool
 		detach             bool
+		allowUploads       []string
 	)
 
 	cmd := &cobra.Command{
@@ -79,7 +81,12 @@ func newRun() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			meta := store.Meta{Name: id, Implicit: true, Speed: speed}
+			for _, host := range allowUploads {
+				if err := sitefile.CheckUploadHost(host); err != nil {
+					return &UsageError{Err: fmt.Errorf("--allow-upload: %w", err)}
+				}
+			}
+			meta := store.Meta{Name: id, Implicit: true, Speed: speed, AllowUploads: allowUploads}
 			want := []desired{{
 				ID:   id,
 				Name: name,
@@ -125,6 +132,7 @@ func newRun() *cobra.Command {
 	flags.Float64Var(&speed, "speed", 1, "multiply the rate of EV charging and energy accumulation")
 	flags.StringVar(&password, "password", "", "password for HTTP Basic authentication; defaults to $"+passwordEnv)
 	flags.BoolVar(&insecureSkipVerify, "insecure-skip-verify", false, "do not verify the CSMS's TLS certificate")
+	flags.StringArrayVar(&allowUploads, "allow-upload", nil, "a host diagnostics may be uploaded to, besides the machine the CSMS is on; may be repeated")
 	_ = cmd.MarkFlagRequired("csms")
 	_ = cmd.MarkFlagRequired("id")
 	return cmd

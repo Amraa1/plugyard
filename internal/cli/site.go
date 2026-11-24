@@ -152,6 +152,8 @@ func newSiteUp() *cobra.Command {
 				EVs:         sf.EVs,
 				LogMaxSize:  sf.LogMaxSize,
 				LogFiles:    sf.LogFiles,
+
+				AllowUploads: sf.AllowUploads,
 			}
 			st, err := prepare(cmd.Context(), cmd, dir, meta, desiredFromFile(sf), yes, false)
 			if err != nil {

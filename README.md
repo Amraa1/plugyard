@@ -301,6 +301,13 @@ plugyard exec FAST-1 fail upload         # the next diagnostics upload ends with
 
 - Each step of a firmware update takes 10 seconds, or less with `--speed`.
 - The diagnostics file holds what `plugyard logs FAST-1` shows, and `startTime` and `stopTime` choose the lines. It is sent with FTP, or with an HTTP `PUT` for an `http://` or `https://` location.
+- **A charger uploads only to the machine its CSMS is on**, unless you allow more. Your CSMS chooses the address, so this keeps a CSMS that has been broken into from pointing the upload at your internal network. A CSMS and a file server on your own machine work with no setting. For a file server elsewhere, name it in the site file:
+
+  ```yaml
+  uploads: { allow: [files.example.com] }
+  ```
+
+  With `plugyard run`, use `--allow-upload files.example.com`. A refused upload ends in `UploadFailed`, and the charger's log shows the line to add.
 
 The details are in [docs/SPEC.md](docs/SPEC.md), section 8.
 

@@ -278,6 +278,10 @@ func TestParseRejectsInvalidFiles(t *testing.T) {
 		{"bad preset battery", "evs: { x: { battery: big } }\n" + entry("model: ./ac.Chargerfile, id: A"), "evs.x: battery"},
 		{"unknown curve", "evs: { x: { curve: warp } }\n" + entry("model: ./ac.Chargerfile, id: A"), "evs.x: curve: unknown charge curve"},
 		{"curve reaching zero", "evs: { x: { curve: [[0%, 100%], [100%, 0%]] } }\n" + entry("model: ./ac.Chargerfile, id: A"), "above 0%"},
+		{"upload host with a scheme", "uploads: { allow: [\"ftp://files.example.com\"] }\n" + entry("model: ./ac.Chargerfile, id: A"), `uploads.allow: "ftp://files.example.com" is not a host`},
+		{"upload host with a port", "uploads: { allow: [\"files.example.com:21\"] }\n" + entry("model: ./ac.Chargerfile, id: A"), "leave out the port"},
+		{"empty upload host", "uploads: { allow: [\"\"] }\n" + entry("model: ./ac.Chargerfile, id: A"), "uploads.allow: a host cannot be empty"},
+		{"unknown uploads field", "uploads: { deny: [x] }\n" + entry("model: ./ac.Chargerfile, id: A"), "deny"},
 		{"malformed curve point", "evs: { x: { curve: [[0%, 100%], [100%]] } }\n" + entry("model: ./ac.Chargerfile, id: A"), "want a pair"},
 	}
 	for _, tc := range cases {
@@ -366,5 +370,16 @@ func TestLargeCount(t *testing.T) {
 	// Every charger of an entry shares one model.
 	if chargers[0].Model != chargers[1999].Model {
 		t.Error("chargers of one entry have separate copies of the model")
+	}
+}
+
+func TestUploadsAllow(t *testing.T) {
+	body := "name: s\ncsms: { url: ws://localhost/ocpp }\nchargers:\n  e: { model: ./ac.Chargerfile, id: A }\n"
+	if site := mustParse(t, body, nil); site.AllowUploads != nil {
+		t.Errorf("a site file without uploads allows %v", site.AllowUploads)
+	}
+	site := mustParse(t, "uploads: { allow: [files.example.com, 10.0.0.5, \"fd12::5\"] }\n"+body, nil)
+	if got := strings.Join(site.AllowUploads, " "); got != "files.example.com 10.0.0.5 fd12::5" {
+		t.Errorf("uploads.allow = %q", got)
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -39,6 +40,9 @@ type Site struct {
 	// LogMaxSize bytes. Zero stands for the defaults, 10 MB and 3.
 	LogMaxSize int64
 	LogFiles   int
+	// AllowUploads lists the hosts diagnostics may be uploaded to besides
+	// the machine the CSMS is on.
+	AllowUploads []string
 	// EVs holds the EV presets by name.
 	EVs map[string]ev.Overrides
 	// Entries are the charger entries, in the order the file lists them.
@@ -85,7 +89,31 @@ type file struct {
 	ConnectRate *float64          `yaml:"connectRate"`
 	EVs         map[string]fileEV `yaml:"evs"`
 	Log         *fileLog          `yaml:"log"`
+	Uploads     *fileUploads      `yaml:"uploads"`
 	Chargers    yaml.Node         `yaml:"chargers"`
+}
+
+type fileUploads struct {
+	Allow []string `yaml:"allow"`
+}
+
+// CheckUploadHost reports what is wrong with a host that diagnostics are to
+// be allowed to go to. It is a host name or an address, as a location
+// names it: no scheme, port or path.
+func CheckUploadHost(host string) error {
+	switch {
+	case host == "":
+		return errors.New("a host cannot be empty")
+	case strings.ContainsAny(host, "/@ ") || strings.Contains(host, "://"):
+		return fmt.Errorf("%q is not a host: give the name or address alone, such as files.example.com", host)
+	}
+	if _, err := netip.ParseAddr(host); err == nil {
+		return nil
+	}
+	if strings.Contains(host, ":") {
+		return fmt.Errorf("%q is not a host: leave out the port", host)
+	}
+	return nil
 }
 
 type fileLog struct {
@@ -219,6 +247,15 @@ func Parse(data []byte, baseDir string, lookupEnv func(string) (string, bool)) (
 		if site.ConnectRate < 0 {
 			problem("connectRate cannot be negative; use 0 for no limit")
 		}
+	}
+
+	if f.Uploads != nil {
+		for _, host := range f.Uploads.Allow {
+			if err := CheckUploadHost(host); err != nil {
+				problem("uploads.allow: %v", err)
+			}
+		}
+		site.AllowUploads = f.Uploads.Allow
 	}
 
 	if f.Log != nil {

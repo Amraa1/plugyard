@@ -127,7 +127,7 @@ func TestSendOverFTP(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	if err := Send(ctx, "ftp://plug:s3cret@"+srv.addr+"/diagnostics/", "CP-1.log", []byte("line 1\nline 2\n")); err != nil {
+	if err := Send(ctx, local, "ftp://plug:s3cret@"+srv.addr+"/diagnostics/", "CP-1.log", []byte("line 1\nline 2\n")); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
 	srv.mu.Lock()
@@ -141,7 +141,7 @@ func TestSendOverFTP(t *testing.T) {
 		"ftp://plug:s3cret@" + srv.addr + "/nowhere/":      "the FTP server has no directory /nowhere/",
 		"ftp://127.0.0.1:1/":                               "cannot reach the FTP server at 127.0.0.1:1",
 	} {
-		err := Send(ctx, location, "CP-1.log", []byte("x"))
+		err := Send(ctx, local, location, "CP-1.log", []byte("x"))
 		if err == nil || !strings.Contains(err.Error(), want) {
 			t.Errorf("Send to %s = %v, want %q", location, err, want)
 		}
@@ -174,7 +174,7 @@ func TestSendOverHTTP(t *testing.T) {
 
 	// With and without a slash at the end of the directory.
 	for _, dir := range []string{"/diagnostics", "/diagnostics/"} {
-		if err := Send(ctx, withUser+dir, "CP-1.log", []byte("line 1\n")); err != nil {
+		if err := Send(ctx, local, withUser+dir, "CP-1.log", []byte("line 1\n")); err != nil {
 			t.Fatalf("Send: %v", err)
 		}
 		got.Lock()
@@ -184,7 +184,7 @@ func TestSendOverHTTP(t *testing.T) {
 		got.Unlock()
 	}
 
-	err := Send(ctx, withUser+"/full/", "CP-1.log", []byte("x"))
+	err := Send(ctx, local, withUser+"/full/", "CP-1.log", []byte("x"))
 	if err == nil || !strings.Contains(err.Error(), "507 Insufficient Storage") || strings.Contains(err.Error(), "s3cret") {
 		t.Errorf("Send to a full server = %v", err)
 	}
@@ -196,7 +196,7 @@ func TestSendRefusesOtherSchemes(t *testing.T) {
 		"files.example/diagnostics/":        "has no scheme",
 		"http://[::1":                       "not a valid address",
 	} {
-		err := Send(context.Background(), location, "CP-1.log", nil)
+		err := Send(context.Background(), local, location, "CP-1.log", nil)
 		if err == nil || !strings.Contains(err.Error(), want) {
 			t.Errorf("Send to %s = %v, want %q", location, err, want)
 		}

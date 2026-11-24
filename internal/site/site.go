@@ -52,6 +52,9 @@ type Config struct {
 	// Diagnostics, if set, returns the log of one charger between two
 	// moments, for GetDiagnostics.
 	Diagnostics func(chargePointID string, from, to time.Time) ([]byte, error)
+	// AllowUploads lists the hosts diagnostics may be uploaded to besides
+	// the machine the CSMS is on.
+	AllowUploads []string
 	// Store, if set, keeps the chargers' state.
 	Store  Store
 	Timing charger.Timing
@@ -128,6 +131,8 @@ func (s *Site) chargerConfig(m Member, saved *charger.State) charger.Config {
 		BeforeDial: s.pacer,
 		Log:        s.cfg.Log,
 		Restore:    saved,
+
+		AllowUploads: s.cfg.AllowUploads,
 	}
 	if s.cfg.Diagnostics != nil {
 		id := m.ID

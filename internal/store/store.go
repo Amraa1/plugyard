@@ -50,6 +50,9 @@ type Meta struct {
 	// LogMaxSize bytes. Zero stands for the defaults.
 	LogMaxSize int64 `json:"logMaxSize,omitempty"`
 	LogFiles   int   `json:"logFiles,omitempty"`
+	// AllowUploads lists the hosts diagnostics may be uploaded to besides
+	// the machine the CSMS is on.
+	AllowUploads []string `json:"allowUploads,omitempty"`
 }
 
 // Spec is the snapshot of the files a charger was created from.

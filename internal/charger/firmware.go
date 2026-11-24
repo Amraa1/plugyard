@@ -319,9 +319,12 @@ func (c *Charger) stepDiagnostics(now time.Time) {
 func (c *Charger) upload(ctx context.Context, t *transfer) {
 	data, err := c.diagnosticsFile(t)
 	if err == nil {
+		c.mu.Lock()
+		policy := upload.Policy{CSMS: c.csmsAddr, Allow: c.cfg.AllowUploads}
+		c.mu.Unlock()
 		var cancel func()
 		ctx, cancel = context.WithTimeout(ctx, c.cfg.Timing.UploadTimeout)
-		err = upload.Send(ctx, t.location, t.name, data)
+		err = upload.Send(ctx, policy, t.location, t.name, data)
 		cancel()
 	}
 	c.mu.Lock()
