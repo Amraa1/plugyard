@@ -47,7 +47,8 @@ One site must run hundreds to a few thousand chargers comfortably on a developer
 - A background daemon or system service; automatic start after reboot
 - An HTTP API
 - Assertions, conditions or loops in scenarios
-- Commands `events`, `wait`, `pause`, `attach`
+- Commands `events`, `pause`, `attach`
+- Waiting for an OCPP message or a log line; `wait` waits for a state
 
 ## 3. Concepts
 
@@ -108,6 +109,7 @@ Site commands act on the `site.yaml` in the current directory unless `-f, --file
 | Command | Effect |
 |---|---|
 | `plugyard ps [-a]` | List running chargers with name, site, connection state (`connecting`, `online` or `offline`) and the status of each connector; `-a` includes stopped ones, shown as `stopped` with the status each connector will report on start. |
+| `plugyard wait <charger>... <state> [-n, --connector <number>] [--timeout <time>]` | Wait until every named charger is in a state (see below). |
 | `plugyard logs <charger> [-f] [--events] [--since <when>] [--tail N]` | Show events and OCPP messages (section 11). |
 | `plugyard stats [--no-stream]` | Live table of power, energy on the meters, transactions and message counts per running charger, with a total first. |
 | `plugyard inspect <charger>` | Full state of one charger: model, connectors, EVs, transactions, charging profiles, configuration keys and the messages still owed to the CSMS. Works on a stopped charger. Never shows a password. |
@@ -154,6 +156,29 @@ plugyard exec <charger> <action> [arguments] [-n, --connector <number>]
 - The exit code is `0` when the action was delivered, whatever the CSMS answered. A rejected tag is the CSMS's answer and not a failure. Exit code `1` means the action could not be carried out, for example because no charger matched or the connector already has an EV.
 - `exec` prints one line per matched charger, sorted by charge point ID: the ID, the connector, `ok` or `failed`, and the outcome or the reason. When the charger argument matched several chargers the action runs on every one of them, a summary line follows (`18 of 20 succeeded, 2 failed`), and the exit code is `1` if any failed. Chargers on which the action worked are not rolled back.
 - `exec` also accepts `--format json`.
+
+### Waiting for a state
+
+```
+plugyard wait <charger>... <state> [-n, --connector <number>] [--timeout <time>] [-s, --site <name>]
+```
+
+`wait` returns when every named charger is in the state. A script uses it in place of a guessed sleep between an action and a check.
+
+- The state is one of:
+
+  | Kind | States | About |
+  |---|---|---|
+  | Connector status | `Available`, `Preparing`, `Charging`, `SuspendedEV`, `SuspendedEVSE`, `Finishing`, `Faulted`, `Unavailable` | Connector 1, or the one `--connector` names |
+  | Connection state | `online`, `offline`, `connecting`, `stopped` | The whole charger, as `ps -a` shows it; `--connector` is an error |
+
+  Upper and lower case are not told apart.
+- Several chargers may be given, each by its charge point ID, its name or a pattern. `wait` returns when all of them are in the state at the same moment.
+- `--timeout` is how long to wait, `30s` unless given; `0` waits without limit. It is real time, whatever the `--speed` of the site.
+- Exit code `0`: the state was reached, or the chargers were in it already. One line per charger is printed, such as `CP-1: connector 1 is Charging`.
+- Exit code `1`: the time ran out. One line for each charger that is not in the state is printed to standard error, such as `CP-1: connector 1 is Preparing, not Charging, after 30s`.
+- Exit code `2`: the state is not one of the list, an argument matches no charger, or a charger has no connector of that number.
+- A stopped charger is `stopped` and has no connector status, so waiting for one on it runs out of time.
 
 ### Other commands
 

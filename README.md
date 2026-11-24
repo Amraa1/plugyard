@@ -137,6 +137,13 @@ plugyard info                            # every site on this machine, where dat
 Every listing command takes `--format json` and prints one object per line. Exit codes are `0` for success, `1` when something could not be done, and `2` for a mistake in the command or a file.
 
 ```sh
+# Wait until FAST-1 is charging, in place of a guessed sleep; exit code 1 if it is not within 30 seconds
+plugyard exec FAST-1 tap 04A1B2C3
+plugyard wait FAST-1 Charging
+
+# The same for several chargers, a connection state, and a longer time
+plugyard wait 'FAST-*' online --timeout 2m
+
 # Did FAST-1 send a StopTransaction?
 plugyard logs FAST-1 --format json | jq -e 'select(.kind == "sent" and .message[2] == "StopTransaction")'
 
