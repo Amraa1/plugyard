@@ -204,6 +204,30 @@ func (s *Site) States() []MemberState {
 	return out
 }
 
+// Inspect returns a charger of the site with its state: as it is now when
+// the charger is powered on, and as it was saved otherwise. The state is nil
+// for a charger that has never run.
+func (s *Site) Inspect(id string) (Member, *charger.State, bool) {
+	s.mu.Lock()
+	m := s.members[id]
+	if m == nil {
+		s.mu.Unlock()
+		return Member{}, nil, false
+	}
+	member, c := m.Member, m.charger
+	s.mu.Unlock()
+
+	if c != nil {
+		state := c.State()
+		return member, &state, true
+	}
+	var saved *charger.State
+	if s.cfg.Store != nil {
+		saved, _ = s.cfg.Store.LoadState(id)
+	}
+	return member, saved, true
+}
+
 // EVParams works out the EV to plug into a charger. From weakest to
 // strongest: the built-in EV, the charger's default preset, the preset named
 // with the plug, and the parameters given with the plug.

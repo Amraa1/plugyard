@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Amraa1/plugyard/internal/model"
@@ -182,6 +183,11 @@ type Charger struct {
 	// profiles holds the charging profiles the CSMS installed.
 	profiles []InstalledProfile
 
+	// sent and received count the OCPP messages since the charger was
+	// powered on.
+	sent     atomic.Int64
+	received atomic.Int64
+
 	// cut ends Run. killed says the end is a power cut, and off that the
 	// charger has no power any more.
 	cut    func()
@@ -267,13 +273,7 @@ func New(cfg Config) (*Charger, error) {
 		reboots:          make(chan reboot, 1),
 		heartbeatChanged: make(chan struct{}, 1),
 	}
-	for key, value := range defaultConfig {
-		c.config[key] = value
-	}
-	for key, value := range cfg.Model.Config {
-		c.config[key] = value
-	}
-	c.config["NumberOfConnectors"] = strconv.Itoa(len(cfg.Model.Connectors))
+	c.config = baseConfig(cfg.Model)
 	for _, mc := range cfg.Model.Connectors {
 		c.connectors = append(c.connectors, &connector{
 			id:       mc.ID,
@@ -767,6 +767,9 @@ func (c *Charger) frame(dir ocppj.Direction, frame []byte) {
 	kind := MessageSent
 	if dir == ocppj.Received {
 		kind = MessageReceived
+		c.received.Add(1)
+	} else {
+		c.sent.Add(1)
 	}
 	c.log(kind, string(frame))
 }

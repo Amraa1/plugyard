@@ -12,6 +12,9 @@ csms:
   # ${CSMS_URL:-...} uses the CSMS_URL environment variable when it is set.
   url: ${CSMS_URL:-ws://localhost:9000/ocpp}
 
+# The site's log holds the newest 30 MB unless this says otherwise.
+# log: { maxSize: 10MB, files: 3 }
+
 # EV presets, for "plugyard exec <charger> plug --ev <name>".
 evs:
   compact:   { battery: 40kWh, maxPower: 50kW }

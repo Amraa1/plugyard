@@ -19,6 +19,7 @@ import (
 	"github.com/Amraa1/plugyard/internal/charger"
 	"github.com/Amraa1/plugyard/internal/datadir"
 	"github.com/Amraa1/plugyard/internal/ev"
+	"github.com/Amraa1/plugyard/internal/logfile"
 	"github.com/Amraa1/plugyard/internal/model"
 )
 
@@ -45,6 +46,10 @@ type Meta struct {
 	Speed       float64                 `json:"speed,omitempty"`
 	ConnectRate float64                 `json:"connectRate,omitempty"`
 	EVs         map[string]ev.Overrides `json:"evs,omitempty"`
+	// LogMaxSize and LogFiles cap the site's log: at most LogFiles files of
+	// LogMaxSize bytes. Zero stands for the defaults.
+	LogMaxSize int64 `json:"logMaxSize,omitempty"`
+	LogFiles   int   `json:"logFiles,omitempty"`
 }
 
 // Spec is the snapshot of the files a charger was created from.
@@ -103,9 +108,16 @@ func Path(dataDir, siteName string) string {
 	return datadir.SiteBase(dataDir, siteName) + dbSuffix
 }
 
-// LogPath returns the file a site running in the background logs to.
+// LogPath returns the file a site logs to. When it is full it is rotated to
+// files of the same name with a number added.
 func LogPath(dataDir, siteName string) string {
 	return datadir.SiteBase(dataDir, siteName) + ".log"
+}
+
+// OutputPath returns the file that takes what the background process of a
+// site prints, which is only what goes wrong with the process itself.
+func OutputPath(dataDir, siteName string) string {
+	return datadir.SiteBase(dataDir, siteName) + ".out"
 }
 
 // Exists reports whether the site has saved state.
@@ -462,10 +474,10 @@ func All(dataDir string) ([]Site, error) {
 // Delete wipes the saved state of a site, and its log.
 func Delete(dataDir, siteName string) error {
 	path := Path(dataDir, siteName)
-	for _, file := range []string{path + "-wal", path + "-shm", LogPath(dataDir, siteName), path} {
+	for _, file := range []string{path + "-wal", path + "-shm", OutputPath(dataDir, siteName), path} {
 		if err := os.Remove(file); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
 	}
-	return nil
+	return logfile.Remove(LogPath(dataDir, siteName))
 }

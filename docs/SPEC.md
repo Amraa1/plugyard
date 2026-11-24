@@ -73,7 +73,7 @@ Rules that apply to every command:
 - Charger commands see chargers from all sites. `-s, --site <name>` narrows to one site.
 - The same charge point ID may exist in two sites. A command whose charger argument is ambiguous fails and asks for `-s` or the charger's name. A name is never ambiguous.
 - Output is labelled with the charge point ID, since that is what the CSMS shows. The name is shown by `ps`.
-- `--format json` is available on `ps`, `site ls`, `inspect`, `stats`, `logs`, `exec`, `start`, `stop`, `restart`, `kill` and `rm`. It prints one JSON object per line, as Docker does.
+- `--format json` is available on `ps`, `site ls`, `inspect`, `stats`, `logs`, `site logs`, `info`, `exec`, `start`, `stop`, `restart`, `kill` and `rm`. It prints one JSON object per line, as Docker does. `inspect` and `info` print a single object. Fields are only ever added to these objects, never renamed or removed.
 - Output is colored when it goes to a terminal: green for `ok`, `online`, `running` and `Charging`; yellow for `connecting`, `Preparing`, `Finishing` and the suspended statuses; red for `failed`, `offline` and `Faulted`. Color is never the only signal, and it is switched off when output is piped or redirected or when the `NO_COLOR` environment variable is set.
 - Exit codes: `0` success, `1` runtime failure, `2` usage or validation error.
 - Starting a site whose name is already running fails with exit code `1`. This includes a second `plugyard run` with the same charge point ID.
@@ -89,9 +89,10 @@ Site commands act on the `site.yaml` in the current directory unless `-f, --file
 | `plugyard site start` | Power on every charger of a stopped site, in the background, exactly as saved. No file is read. |
 | `plugyard site down [--reset]` | Stop and remove the chargers from the listing. Saved state is kept unless `--reset` is given, which wipes it. |
 | `plugyard site ls [-a]` | List running sites; `-a` includes sites that are `stopped` or `down`. |
+| `plugyard site logs [-f] [--events] [--since <when>] [--tail N]` | Show the log of every charger of the site. Here `-f` follows, as in `docker compose logs`; another site file is named with `--file`. |
 | `plugyard site validate` | Check the site file and the Chargerfiles it references without starting anything, and list the chargers it would create with their charge point IDs. |
 
-- `site up -d` starts a background copy of plugyard, waits until it reports the site running, and returns (see ADR 0005). The background process writes its log to a file in the data directory. It keeps running after the terminal closes, and ends when the user signs out.
+- `site up -d` starts a background copy of plugyard, waits until it reports the site running, and returns (see ADR 0005). Its chargers log to the site's log files like those of any other site; `site logs -f` follows them. It keeps running after the terminal closes, and ends when the user signs out.
 - `site stop` and `site down` shut a site down in an orderly way: transactions end with `StopTransaction`, then connections close. They work on a site in the foreground of another terminal as well as one in the background. Pressing Ctrl+C in a foreground `site up` does the same as `site stop`.
 - `site up` and `site start` differ as in Docker compose. `site up` reads the site file again and applies what changed. `site start` reads nothing and works from any directory with `-s <name>`. A site that was taken down is refused by `site start`, with a message to use `site up`.
 - A site is `running` while its process lives, `stopped` when it has saved state and no process, and `down` after `site down`. A site whose process was killed or crashed shows as `stopped`.
@@ -105,9 +106,9 @@ Site commands act on the `site.yaml` in the current directory unless `-f, --file
 | Command | Effect |
 |---|---|
 | `plugyard ps [-a]` | List running chargers with name, site, connection state (`connecting`, `online` or `offline`) and the status of each connector; `-a` includes stopped ones, shown as `stopped` with the status each connector will report on start. |
-| `plugyard logs <charger> [-f] [--events] [--since <duration>]` | Show events and OCPP messages. |
-| `plugyard stats` | Live table of power, energy delivered and message counts per charger. |
-| `plugyard inspect <charger>` | Full state: model, configuration keys, charging profiles, connectors, transaction. |
+| `plugyard logs <charger> [-f] [--events] [--since <when>] [--tail N]` | Show events and OCPP messages (section 11). |
+| `plugyard stats [--no-stream]` | Live table of power, energy on the meters, transactions and message counts per running charger, with a total first. |
+| `plugyard inspect <charger>` | Full state of one charger: model, connectors, EVs, transactions, charging profiles, configuration keys and the messages still owed to the CSMS. Works on a stopped charger. Never shows a password. |
 | `plugyard start <charger>` | Power on. |
 | `plugyard stop <charger>` | Orderly shutdown. State is kept. |
 | `plugyard restart <charger>` | `stop` then `start`. |
@@ -158,7 +159,14 @@ plugyard exec <charger> <action> [arguments] [-n, --connector <number>]
 | `plugyard scenario run <file>` | Run a scenario against a running site. |
 | `plugyard init` | Write a sample `site.yaml` and Chargerfile. |
 | `plugyard version` | Print the version and supported OCPP versions. |
-| `plugyard info` | Print running sites, charger counts, CSMS URLs and the data directory location. |
+| `plugyard info` | Print the version, the data directory, and every site with its status, charger counts and CSMS URLs. |
+
+`stats` behaves as `docker stats` does:
+
+- In a terminal it refreshes every second until Ctrl+C, busiest chargers first, showing as many as fit on the screen.
+- With `--no-stream`, with `--format json`, or when the output is not a terminal, it prints once, with every charger, sorted by charge point ID.
+- Power is what the charger delivers now over all its connectors, and energy is the sum of its meter registers.
+- Message counts are since the charger was powered on. They are not saved.
 
 ## 5. Chargerfile
 
@@ -204,6 +212,7 @@ csms:
   insecureSkipVerify: false
 speed: 1
 connectRate: 0                         # new connections per second; 0 = no limit
+log: { maxSize: 10MB, files: 3 }       # the cap of the site's log; these are the defaults
 evs:
   compact:   { battery: 40kWh, maxPower: 50kW }
   longrange: { battery: 82kWh, maxPower: 230kW, soc: 10%, targetSoc: 80%, curve: dc-fast }
@@ -226,6 +235,7 @@ chargers:
 - Entry names (`fast`, `lobby`) are used only inside the file. Everywhere else a charger is known by its charge point ID or its name.
 - `name` gives a charger its name, and is allowed only on an entry that creates one charger. Every other charger gets a made-up name of the form `adjective_noun`, such as `brisk_volt`, when it is first created. A name is letters, digits, `_`, `.` and `-`. It stays with the charger until `rm` or `--reset`, and a name already in use on the machine is refused.
 - A Chargerfile path is relative to the site file.
+- `log` caps the site's log (section 11): at most `files` files of `maxSize` each. `maxSize` takes `kB`, `MB` or `GB` and is at least `1kB`; `files` is from 1 to 100.
 - Unknown settings are errors, and `site validate` reports every problem at once.
 
 ### Charge point IDs
@@ -496,8 +506,42 @@ steps:
 
 - Two kinds of timestamped line per charger: events (connected, transaction started, fault) and raw OCPP messages in each direction.
 - Each line is a timestamp, the charge point ID, a marker and the text. The marker is `|` for an event, `>` for a message sent to the CSMS and `<` for a message received from it.
-- `logs` shows both; `--events` shows only events; `-f` follows; `--since 10m` limits the range.
-- Logs are written to rotating, size-capped plain files beside the site's database. They are not stored in the database.
+
+```
+2026-01-02T15:04:05.000+01:00 CP-1 | accepted by the CSMS
+2026-01-02T15:04:05.010+01:00 CP-1 > [2,"7","Heartbeat",{}]
+2026-01-02T15:04:05.020+01:00 CP-1 < [3,"7",{"currentTime":"2026-01-02T14:04:05.015Z"}]
+```
+
+Where the log is kept:
+
+- One log per site, in plain files beside the site's database. It is not stored in the database.
+- It is written whether the site runs in the foreground or the background. A foreground site prints the same lines to its terminal as well.
+- The log is capped. The current file is rotated when it reaches `maxSize`, and at most `files` files are kept, so the log holds the newest `maxSize` x `files` at most: 30 MB by default. The site file's `log` setting changes the cap.
+- The log outlives a stop, and is deleted with the saved state by `site down --reset` and by `rm` of a charger started with `plugyard run`.
+- A charger started with `run --rm` keeps no log.
+
+Reading it:
+
+| Command | Shows |
+|---|---|
+| `plugyard logs <charger>` | The lines of one charger, or of every charger matching a pattern |
+| `plugyard site logs` | The lines of every charger of a site |
+
+| Flag | Effect |
+|---|---|
+| `-f`, `--follow` | Keep showing new lines. Following ends on Ctrl+C, or by itself when the site stops, as `docker logs -f` does |
+| `--events` | Only events, no OCPP messages |
+| `--since <when>` | Only lines from that moment on: how long ago (`10m`, `2h`) or a time (`2026-01-02T15:04:05Z`) |
+| `--tail N` | Only the last N lines. The default is everything still in the files |
+| `--format json` | One object per line |
+
+- Both commands work while the chargers are stopped.
+- A JSON line has `time`, `chargePointId`, `kind` (`event`, `sent` or `received`) and `text`. A line that is an OCPP message also has `message`, the message as JSON, so that a script can read the action or the payload without parsing text.
+
+```json
+{"time":"2026-01-02T15:04:05.010+01:00","chargePointId":"CP-1","kind":"sent","text":"[2,\"7\",\"Heartbeat\",{}]","message":[2,"7","Heartbeat",{}]}
+```
 
 ## 12. Distribution
 

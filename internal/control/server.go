@@ -65,6 +65,7 @@ func Serve(dataDir string, s *site.Site, shutdown func()) (*Server, error) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/info", srv.handleInfo)
 	mux.HandleFunc("GET /v1/chargers", srv.handleChargers)
+	mux.HandleFunc("GET /v1/inspect", srv.handleInspect)
 	mux.HandleFunc("POST /v1/exec", srv.handleExec)
 	mux.HandleFunc("POST /v1/power", srv.handlePower)
 	mux.HandleFunc("POST /v1/shutdown", srv.handleShutdown)
@@ -112,6 +113,15 @@ func (srv *Server) handleChargers(w http.ResponseWriter, _ *http.Request) {
 		})
 	}
 	writeJSON(w, states)
+}
+
+func (srv *Server) handleInspect(w http.ResponseWriter, r *http.Request) {
+	member, state, ok := srv.site.Inspect(r.URL.Query().Get("id"))
+	if !ok {
+		http.Error(w, "the site has no such charger", http.StatusNotFound)
+		return
+	}
+	writeJSON(w, Inspection{Model: member.Model, CSMSURL: member.CSMS.URL, State: state})
 }
 
 func (srv *Server) handleExec(w http.ResponseWriter, r *http.Request) {

@@ -86,7 +86,7 @@ func newRun() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return serveSaved(cmd.Context(), dir, st, cmd.OutOrStdout(), func(string) string { return password })
+			return serveSaved(cmd.Context(), dir, st, cmd.OutOrStdout(), !remove, func(string) string { return password })
 		},
 	}
 
