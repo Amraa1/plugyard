@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -14,9 +15,9 @@ import (
 	"github.com/Amraa1/plugyard/internal/store"
 )
 
-// dataFilePrefix starts the name of every file plugyard keeps in its data
-// directory (see datadir.SiteBase).
-const dataFilePrefix = "s-"
+// dataFilePrefixes start the names of the files plugyard keeps in its data
+// directory: those of sites (see datadir.SiteBase) and those of the API.
+var dataFilePrefixes = []string{"s-", "api."}
 
 // programFolder is the name of a folder that was made for plugyard alone,
 // as the Windows install script makes one. Only such a folder is removed
@@ -65,11 +66,27 @@ func dataFiles(dir string) []string {
 	entries, _ := os.ReadDir(dir)
 	var files []string
 	for _, e := range entries {
-		if strings.HasPrefix(e.Name(), dataFilePrefix) {
-			files = append(files, filepath.Join(dir, e.Name()))
+		for _, prefix := range dataFilePrefixes {
+			if strings.HasPrefix(e.Name(), prefix) {
+				files = append(files, filepath.Join(dir, e.Name()))
+			}
 		}
 	}
 	return files
+}
+
+// removeReleased deletes a file of the data directory. A site or an API
+// that was just stopped may hold its files a moment longer, and Windows
+// does not delete a file that is open, so it tries for a few seconds.
+func removeReleased(path string) error {
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		err := os.RemoveAll(path)
+		if err == nil || time.Now().After(deadline) {
+			return err
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
 }
 
 func newUninstall() *cobra.Command {
@@ -84,8 +101,9 @@ func newUninstall() *cobra.Command {
 		Long: "Remove the plugyard program, and the saved chargers and logs it keeps. On\n" +
 			"Windows the entry the install script added to your PATH goes too. It shows\n" +
 			"what it is about to remove and asks first.\n\n" +
-			"Running sites must be stopped first. --keep-data leaves the saved chargers\n" +
-			"and logs, for when you plan to install plugyard again.\n\n" +
+			"Sites and the API that are running are stopped first; the question names\n" +
+			"them. --keep-data leaves the saved chargers and logs, for when you plan to\n" +
+			"install plugyard again.\n\n" +
 			"The folder of the program is removed with it only when it is named\n" +
 			"\"plugyard\" and holds nothing else; a folder plugyard shares with other\n" +
 			"programs is left as it is, and so is your PATH.",
@@ -96,22 +114,15 @@ func newUninstall() *cobra.Command {
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			ctx, out := cmd.Context(), cmd.OutOrStdout()
 
-			// A site holds the program open and writes to the data.
-			w, err := loadWorld(ctx, "")
+			dataDir, err := datadir.Path()
 			if err != nil {
 				return err
 			}
-			var running []string
-			for _, client := range w.clients {
-				running = append(running, client.Info.Site)
-			}
-			w.close()
-			if len(running) > 0 {
-				what := "site " + running[0] + " is"
-				if len(running) > 1 {
-					what = "sites " + joinWords(running) + " are"
-				}
-				return fmt.Errorf("%s running; stop every site first with \"plugyard site stop -s <name>\", then uninstall. Nothing was removed", what)
+			// Sites and the API hold the program open and write to the
+			// data. They are stopped first, once the user has said yes.
+			live, err := findRunning(ctx, dataDir)
+			if err != nil {
+				return err
 			}
 
 			exe, err := executablePath()
@@ -124,10 +135,6 @@ func newUninstall() *cobra.Command {
 			}
 			onPath := folder != "" && onUserPath(folder)
 
-			dataDir, err := datadir.Path()
-			if err != nil {
-				return err
-			}
 			files := dataFiles(dataDir)
 			sites, chargers := 0, 0
 			if saved, err := store.All(dataDir); err == nil {
@@ -161,6 +168,10 @@ func newUninstall() *cobra.Command {
 				fmt.Fprintf(out, "Your saved chargers and logs are kept: %s\n", saved)
 			}
 
+			if live.any() {
+				fmt.Fprintf(out, "Running now, and stopped first: %s.%s\n", live.describe(), live.ending())
+			}
+
 			if !yes {
 				if !stdinIsTerminal() {
 					return errors.New("there is nobody to ask; run again with --yes to remove plugyard. Nothing was removed")
@@ -172,6 +183,10 @@ func newUninstall() *cobra.Command {
 				default:
 					return errors.New("nothing was removed")
 				}
+			}
+
+			if err := live.stop(ctx, dataDir, out); err != nil {
+				return fmt.Errorf("%w. Nothing was removed", err)
 			}
 
 			// The program goes first: it is the one thing that may not be
@@ -188,7 +203,7 @@ func newUninstall() *cobra.Command {
 			var problems []string
 			if !keepData {
 				for _, f := range files {
-					if err := os.RemoveAll(f); err != nil {
+					if err := removeReleased(f); err != nil {
 						problems = append(problems, err.Error())
 					}
 				}

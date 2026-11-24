@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -112,39 +113,10 @@ func newInspect() *cobra.Command {
 			if isPattern(args[0]) {
 				return &UsageError{Err: fmt.Errorf("inspect shows one charger, so %q cannot be a pattern", args[0])}
 			}
-			w, err := loadWorld(cmd.Context(), siteName)
+			view, err := inspectOne(cmd.Context(), siteName, args[0])
 			if err != nil {
 				return err
 			}
-			defer w.close()
-			targets, err := w.match(args[0], nil)
-			if err != nil {
-				return err
-			}
-			if len(targets) == 0 {
-				return fmt.Errorf("no charger matches %q", args[0])
-			}
-			t := targets[0]
-
-			var details control.Inspection
-			if t.client != nil {
-				if details, err = t.client.Inspect(cmd.Context(), t.state.ChargePointID); err != nil {
-					return fmt.Errorf("site %q did not answer: %w", t.state.Site, err)
-				}
-			} else {
-				for _, s := range w.saved {
-					for _, c := range s.Chargers {
-						if s.Meta.Name == t.state.Site && c.ID == t.state.ChargePointID {
-							details = control.Inspection{Model: c.Spec.Model, CSMSURL: c.Spec.CSMSURL, State: c.State}
-						}
-					}
-				}
-			}
-			if details.Model == nil {
-				return fmt.Errorf("charger %s has no saved state to inspect", t.state.ChargePointID)
-			}
-
-			view := inspect(t.state, details)
 			out := cmd.OutOrStdout()
 			if format == formatJSON {
 				return json.NewEncoder(out).Encode(view)
@@ -157,6 +129,44 @@ func newInspect() *cobra.Command {
 	cmd.Flags().StringVarP(&siteName, "site", "s", "", "only look at chargers of this site")
 	addFormatFlag(cmd, &format)
 	return cmd
+}
+
+// inspectOne finds the charger an argument names and returns everything
+// known about it.
+func inspectOne(ctx context.Context, siteName, arg string) (inspection, error) {
+	var none inspection
+	w, err := loadWorld(ctx, siteName)
+	if err != nil {
+		return none, err
+	}
+	defer w.close()
+	targets, err := w.match(arg, nil)
+	if err != nil {
+		return none, err
+	}
+	if len(targets) == 0 {
+		return none, &matchError{kind: matchNone, text: fmt.Sprintf("no charger matches %q", arg)}
+	}
+	t := targets[0]
+
+	var details control.Inspection
+	if t.client != nil {
+		if details, err = t.client.Inspect(ctx, t.state.ChargePointID); err != nil {
+			return none, fmt.Errorf("site %q did not answer: %w", t.state.Site, err)
+		}
+	} else {
+		for _, s := range w.saved {
+			for _, c := range s.Chargers {
+				if s.Meta.Name == t.state.Site && c.ID == t.state.ChargePointID {
+					details = control.Inspection{Model: c.Spec.Model, CSMSURL: c.Spec.CSMSURL, State: c.State}
+				}
+			}
+		}
+	}
+	if details.Model == nil {
+		return none, fmt.Errorf("charger %s has no saved state to inspect", t.state.ChargePointID)
+	}
+	return inspect(t.state, details), nil
 }
 
 // inspect puts together what is known about a charger: what it shows right

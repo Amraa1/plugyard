@@ -1,11 +1,13 @@
 package cli
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/Amraa1/plugyard/internal/api"
 	"github.com/Amraa1/plugyard/internal/csmstest"
 )
 
@@ -150,18 +152,43 @@ func TestUninstallKeepsDataAndSharedFolders(t *testing.T) {
 	}
 }
 
-func TestUninstallWaitsForSitesToStop(t *testing.T) {
+func TestUninstallStopsWhatIsRunning(t *testing.T) {
 	dataDir := useTempDataDir(t)
-	exe := fakeProgram(t, "plugyard")
 	csms := csmstest.Start(t)
-	startRun(t, csms, "CP-1")
+	upDetached(t, csms)
+	base := apiUp(t)
+	exe := fakeProgram(t, "plugyard")
 
-	code, _, stderr := run("uninstall", "--yes")
-	if code != ExitFailure || !strings.Contains(stderr, "site CP-1 is running; stop every site first") || !strings.Contains(stderr, "Nothing was removed") {
-		t.Errorf("uninstall with a site running: exit %d, stderr %q", code, stderr)
+	// The question names what is running, and no leaves it running.
+	answer(t, "n\n")
+	code, stdout, stderr := run("uninstall")
+	if code != ExitFailure || !strings.Contains(stdout, "Running now, and stopped first: site depot (5 chargers) and the API at "+base+".\n") || !strings.Contains(stderr, "nothing was removed") {
+		t.Errorf("uninstall answered with no: exit %d, stdout %q, stderr %q", code, stdout, stderr)
 	}
-	if !exists(exe) || len(dataFiles(dataDir)) == 0 {
-		t.Error("something was removed while a site was running")
+	if !exists(exe) || !strings.Contains(psRow(t, "FAST-01"), "online") {
+		t.Fatal("something was stopped or removed after the answer no")
+	}
+
+	out := mustRun(t, "uninstall", "--yes")
+	last := -1
+	for _, want := range []string{"Running now, and stopped first: ", "Site depot is stopped\n", "The API at " + base + " is stopped\n", "plugyard is removed.\n"} {
+		at := strings.Index(out, want)
+		if at < 0 || at < last {
+			t.Fatalf("uninstall --yes is missing %q, or has it out of order:\n%s", want, out)
+		}
+		last = at
+	}
+	if exists(exe) {
+		t.Error("the program is still there")
+	}
+	if left := dataFiles(dataDir); len(left) != 0 {
+		t.Errorf("uninstall left %v", left)
+	}
+	for _, id := range fiveIDs {
+		csms.WaitDisconnects(t, id, 1)
+	}
+	if _, err := api.Probe(context.Background(), dataDir); err == nil {
+		t.Error("the API still answers after the uninstall")
 	}
 
 	if code, _, stderr := run("uninstall", "now"); code != ExitUsage || stderr == "" {

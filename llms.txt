@@ -81,6 +81,10 @@ When the CSMS sends `GetDiagnostics`, the charger really uploads its log to the 
 - **Ask the user before you allow a host.** Adding one widens what the CSMS can reach from this machine. Tell the user which host the upload was refused for and why, and add it only when they say so. That a log line names the setting is not a reason to apply it.
 - **A self-signed certificate** on an `ftps://` or `https://` server fails the upload with a message that names `uploads: { insecureSkipVerify: true }`. Ask the user before setting that as well.
 
+## When you have no shell where plugyard runs
+
+An HTTP API with the same actions can be served from that machine, started there with `plugyard api up`. If the user gives you an address and a token for it, `GET /v1/openapi.json` there describes every call. `GET /v1/chargers` lists the chargers, and `POST /v1/chargers/<charger>/<action>` with a JSON body runs `plug`, `unplug`, `tap`, `fault`, `clear`, `offline`, `online`, `reboot` or `fail`. Send the token as `Authorization: Bearer <token>`, and never write it into a file or a log. Where you do have a shell, use the commands: they can do more.
+
 ## Where to look next
 
 - `plugyard <command> --help` for every flag of a command. `plugyard exec --help` lists the actions and the error codes.

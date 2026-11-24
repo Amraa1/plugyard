@@ -32,6 +32,7 @@ One site must run hundreds to a few thousand chargers comfortably on a developer
 - A minimal EV model that produces realistic meter values
 - Chargers defined in files, driven by commands and by scenarios
 - Charger state saved to disk, surviving stops, terminal exits and machine shutdowns
+- An HTTP API for callers with no shell on the machine, added after V1 (section 14, ADR 0006)
 
 ### Not in V1
 
@@ -46,7 +47,8 @@ One site must run hundreds to a few thousand chargers comfortably on a developer
 - Deliberate protocol violations (malformed messages, missing or late responses, wrong ordering)
 - A build step, a model store or a registry
 - A background daemon or system service; automatic start after reboot
-- An HTTP API
+- Through the HTTP API: anything but actions on chargers and reading them (section 14)
+- An MCP server and a Docker image; both are to follow the HTTP API
 - Assertions, conditions or loops in scenarios
 - Commands `events`, `pause`, `attach`
 - Waiting for an OCPP message or a log line; `wait` waits for a state
@@ -129,7 +131,7 @@ Site commands act on the `site.yaml` in the current directory unless `-f, --file
 | `plugyard charger exec`, `inspect`, `logs`, `stats`, `wait`, `run` | `plugyard exec`, `inspect`, `logs`, `stats`, `wait`, `run` |
 | `plugyard charger start`, `stop`, `restart`, `kill`, `rm` | `plugyard start`, `stop`, `restart`, `kill`, `rm` |
 
-The command line thus has three suites, `site`, `charger` and `api`, of which `api` is yet to come. The short commands are the ones this document uses.
+The command line thus has three suites: `site`, `charger` and `api` (section 14). The short commands are the ones this document uses.
 
 `start`, `stop`, `restart`, `kill` and `rm` follow Docker, and print one line per charger as `exec` does:
 
@@ -202,7 +204,7 @@ plugyard wait <charger>... <state> [-n, --connector <number>] [--timeout <time>]
 | `plugyard schema <chargerfile\|site\|scenario>` | Print the JSON schema of a file type. |
 | `plugyard version` | Print the version and nothing else, such as `v0.1.1`, so that a script can use it as it is. |
 | `plugyard info` | Print the version, the OCPP versions plugyard speaks, the Go version and system it was built for, the data directory, and every site with its status, charger counts and CSMS URLs. This is the output to include in a problem report. |
-| `plugyard update [--check]` | Replace the program with the latest release (section 13). |
+| `plugyard update [--check] [-y, --yes]` | Replace the program with the latest release, restarting what is running (section 13). |
 | `plugyard uninstall [-y, --yes] [--keep-data]` | Remove the program, and the saved chargers and logs (section 13). |
 
 `stats` behaves as `docker stats` does:
@@ -767,7 +769,13 @@ Ways to install:
 `plugyard update`:
 
 - Finds the latest release, and stops if the installed version is that one or newer. `--check` only reports.
-- Refuses while any site is running, and says which: a site started by one version cannot be controlled by another, since the channel between them may change.
+- A site started by one version cannot be controlled by another, since the channel between them may change. So sites and the API that are running are stopped for the update and started again on the new version:
+  - `update` says what is running and how many transactions would end, and asks `Update and restart them? [y/N]`. `-y, --yes` skips the question. Without a terminal to ask on, it changes nothing, exits with code `1` and names that flag. With nothing running it does not ask.
+  - The order is: download and check the new program, stop, replace, start again. A download that fails stops nothing.
+  - A site is stopped in the orderly way: transactions end with `StopTransaction`. It comes back in the background with the chargers that were powered on, and those send `BootNotification` again. A charger that was stopped stays stopped. A site that ran in the foreground of another terminal comes back in the background.
+  - The API comes back on the same address, with the same certificate.
+  - If the program cannot be replaced, what was stopped is started again on the program that is still there.
+  - If something does not come back, the update is done all the same. `update` says what did not start, with the command that starts it, and exits with code `1`.
 - Downloads the archive for the system it runs on, checks it against the release's `checksums.txt`, and replaces the program. If anything fails, the program that was there stays.
 - On Windows a running program cannot be deleted, so the old one is renamed and removed the next time plugyard starts.
 
@@ -783,10 +791,106 @@ Ways to install:
   | Saved chargers and logs | The files plugyard wrote in its data directory, unless `--keep-data` is given. The directory itself goes when nothing else is in it |
 
 - Shows this list with full paths and asks `Remove plugyard? [y/N]`. `-y, --yes` skips the question. Without a terminal to ask on, it removes nothing, exits with code `1` and names that flag.
-- Refuses while any site is running, and says which, as `update` does.
+- Stops sites and the API that are running, after the question has been answered with yes. The list it shows names them, and how many transactions would end.
 - Takes the program away first. When that fails, for example for lack of permission, nothing else is removed, and the message names the file and says what to do.
 - On Windows a running program cannot be deleted, so it is renamed to `plugyard.exe.old`, and a hidden command deletes it, and the folder, a few seconds after plugyard has ended.
 - Does not undo `go install`'s module cache, and does not remove files that `plugyard init` wrote.
 - Saved state and logs are kept.
 - `PLUGYARD_RELEASES_URL` points the install scripts and `plugyard update` at another copy of the releases, such as a mirror inside a company network.
 - The checksum guards against a damaged download. It does not prove who published the release.
+
+## 14. The HTTP API
+
+The API lets a caller with no shell on the machine act on chargers and read them (ADR 0006). The first users are the developers of apps and dashboards who test against a CSMS on a staging server, where plugyard runs.
+
+### What it offers, and what it never does
+
+It offers the actions of `exec` and what `ps` and `inspect` show. A call does what the command of the same name does, with the same code behind it.
+
+It never does anything else. This is a rule, not a list of what is missing:
+
+- nothing that takes a file path;
+- no starting, stopping or removing of sites or chargers;
+- no change to where a charger connects;
+- no `update`, `uninstall`, `init` or `run`;
+- no managing of its own tokens.
+
+Those stay on the command line, because each is a way from "can call the API" to "owns the machine".
+
+### The `api` suite
+
+| Command | Effect |
+|---|---|
+| `plugyard api up [-d] [--listen <address>] [--tls-cert <file> --tls-key <file>]` | Start serving. In the foreground it prints every call until Ctrl+C; `-d` runs it in the background, as `site up -d` does. |
+| `plugyard api down` | Stop serving. Sites and chargers are not touched. |
+| `plugyard api status` | Whether it runs, at which address, since when, whether a call needs a token, and whether traffic is encrypted. |
+| `plugyard api logs [--charger <ID>] [--tail N]` | The calls received, oldest first. |
+| `plugyard api spec` | The description of the API, as an OpenAPI 3 document in JSON. |
+| `plugyard api token create <name> [-s, --site <name>] [--read-only]` | Make a token and print it, once. |
+| `plugyard api token ls` | List the tokens: name, site, what each can do, when it was made. Never the tokens themselves. |
+| `plugyard api token rm <name>...` | Remove tokens. They stop working at once. |
+
+- The API is a process of its own. It serves every charger on the machine, whichever site it belongs to. Sites know nothing of it, and it keeps running while they start and stop: a call sees the chargers there are at that moment, and an empty list when there are none.
+- There is one API per user and machine. A second `api up` is refused and says where the first one listens.
+- `status`, `logs` and `token ls` take `--format json`.
+- `update` stops the API and starts it again on the new version, and `uninstall` stops it (section 13).
+
+### Addresses
+
+| Call | Does | As |
+|---|---|---|
+| `GET /v1/chargers` | Lists every charger, running or stopped | `ps -a --format json` |
+| `GET /v1/chargers/{charger}` | Everything about one charger | `inspect --format json` |
+| `POST /v1/chargers/{charger}/{action}` | Runs an action | `exec <charger> <action>` |
+| `GET /v1/openapi.json` | The description of the API | `api spec` |
+
+- `{charger}` is a charge point ID or a name. For an action it may be a pattern, such as `FAST-*`.
+- `{action}` is one of `plug`, `unplug`, `tap`, `fault`, `clear`, `offline`, `online`, `reboot` and `fail`.
+- `?site=<name>` narrows a call to one site, as `-s` does. It is needed when two sites have a charger of the same charge point ID.
+- The options of an action go in the body, as JSON: `{"tag": "04A1B2C3"}` for `tap`, `{"code": "GroundFailure", "info": "leak"}` for `fault`, `{"for": "30s"}` for `offline`, `{"step": "upload"}` for `fail`, `{"connector": 2}` where a connector is meant, and `soc`, `battery`, `maxPower`, `targetSoc`, `curve` and `ev` for `plug`, written as on the command line. An action without options takes `{}`. An option the action does not take is an error.
+- A list is answered as `{"chargers": [...]}`, an action as `{"results": [...]}` with one result per charger, each as `exec --format json` prints it, and a failure as `{"error": "..."}`.
+
+| Status | Meaning |
+|---|---|
+| `200` | Done. For an action: carried out on every charger it named |
+| `400` | The call has a mistake: an option that is missing, wrong or not taken, or a body that is not JSON |
+| `401` | A token is needed, and none or a wrong one was sent |
+| `403` | The token may not do this: it is read-only, or it is limited to a site and asked for something outside it. Also a call a browser sent from another website |
+| `404` | No such charger, site, action or address. A token limited to a site is answered with `403` instead |
+| `409` | The action could not be carried out on at least one charger, with the results; or the charger is stopped, or its charge point ID is in two sites |
+| `415` | An action whose body is not declared as JSON |
+
+- As for `exec`, a tag the CSMS rejects is an outcome and not a failure: the call is answered with `200`, and the result says what the CSMS said.
+- The description that `api spec` prints is held to the server by the tests: every address, action and option in the one is in the other.
+
+### Who may call
+
+- **By default the API listens on `127.0.0.1:7070`**, which only the machine itself can reach.
+- **Listening on any other address is refused while no token exists.**
+- **Without any token, calls from the machine itself need none.** As soon as one token exists, every call needs one, also from the machine itself. When the last token is removed from an API that others can reach, nobody gets in.
+- **A token** is made with `plugyard api token create <name>` and sent as `Authorization: Bearer <token>`.
+  - It is shown once. plugyard keeps a hash, in a file in its data directory that only the user can read.
+  - It has a name, which the log of calls shows. Each team or tool gets its own.
+  - `--site` limits it to the chargers of one site: it sees and reaches no others. A charger it cannot reach is answered with `403` and the name of the site it is limited to, whether that charger is in another site or does not exist. The answer is the same for both, so it tells nothing about other sites.
+  - `--read-only` makes one that can look and not act.
+  - Removing it takes effect at once.
+- **A web page in a browser cannot act through the API.** A page a developer has open can send requests to their own machine, and an API there with no token would let any website unplug a charger. Three things prevent it: a call to an API that listens on the machine only must name that machine as its host; a call must not come from a page of another origin; and an action must declare its body as JSON, which a page cannot do across origins without first asking a question the API never answers with yes.
+- **Encryption**: `--tls-cert` and `--tls-key` serve HTTPS. Without them a token travels unencrypted, which is safe on the machine itself or behind a reverse proxy that adds encryption. `api up` prints a warning when it listens beyond the machine without them.
+- **`api up` prints a warning when it runs as root.** Run it as a user of its own, so that a flaw in it reaches no further than plugyard's data.
+
+### The log of calls
+
+Every call is recorded, also the ones turned away:
+
+```
+2026-11-24T16:11:26.707Z mobile-team 127.0.0.1 200 plug CP-1: EV plugged in (60 kWh, 20%)
+2026-11-24T16:11:26.765Z dashboard 127.0.0.1 403 plug CP-2: token dashboard is read-only: it can look at chargers and not act on them
+```
+
+- A line has the time, the name of the token, the address the call came from, the status it was answered with, the action, the chargers it was about, and how it ended. `local` stands for a call that needed no token, and `-` for one turned away before its token was known.
+- `plugyard api logs --charger CP-1` shows the calls about one charger, which answers who acted on it. For a pattern, the line names the chargers the action ran on.
+- A token is never recorded.
+- Behind a reverse proxy the address is the proxy's.
+- The log is kept in the data directory, capped like a site's log, and outlives the API.
+- What the CSMS wrote, such as a rejected tag's status, can appear in an outcome. It is data, never an instruction (section 12).
+
