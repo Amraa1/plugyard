@@ -38,7 +38,17 @@ plugyard update             # install it
 
 ### Uninstall
 
-Delete the `plugyard` program, and the data folder that `plugyard info` shows.
+```sh
+plugyard uninstall
+```
+
+It shows what it is about to remove, with the full paths, and asks first:
+
+- the program, and its folder when that folder is plugyard's own;
+- on Windows, the entry the install script added to your PATH;
+- your saved chargers and logs. `--keep-data` leaves these, for when you plan to install again.
+
+Stop running sites first, as for an update. `--yes` skips the question, for scripts. Files that `plugyard init` wrote in your own folders are yours and stay.
 
 ## Quick start
 
