@@ -265,8 +265,13 @@ func TestAPITokens(t *testing.T) {
 	if status, _ := apiCall(t, base, "POST", "/v1/chargers/CP-1/plug", token, "{}"); status != 200 {
 		t.Errorf("plug within the token's site = %d", status)
 	}
-	if status, body := apiCall(t, base, "POST", "/v1/chargers/CP-2/plug", token, "{}"); status != 404 || !strings.Contains(body, "no running charger matches") {
-		t.Errorf("plug outside the token's site = %d %s", status, body)
+	// A charger of another site and one that is nowhere get the same
+	// answer.
+	for _, id := range []string{"CP-2", "CP-9"} {
+		status, body := apiCall(t, base, "POST", "/v1/chargers/"+id+"/plug", token, "{}")
+		if status != 403 || !strings.Contains(body, `token mobile-team is limited to site CP-1: no running charger matches \"`+id+`\"`) {
+			t.Errorf("plug on %s, outside the token's site = %d %s", id, status, body)
+		}
 	}
 	if row := psRow(t, "CP-2"); row != "CP-2 cp-2 CP-2 online 1:Available" {
 		t.Errorf("a token of another site acted on CP-2: %q", row)

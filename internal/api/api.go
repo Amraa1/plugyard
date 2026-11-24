@@ -449,13 +449,21 @@ func (s *Server) site(rec *recorder, r *http.Request) (string, bool) {
 }
 
 // answer writes what a Backend failed with.
-func answer(rec *recorder, err error) {
+func answer(rec *recorder, r *http.Request, err error) {
 	var known *Error
-	if errors.As(err, &known) {
-		rec.fail(known.Status, "%s", known.Message)
+	if !errors.As(err, &known) {
+		rec.fail(http.StatusInternalServerError, "%v", err)
 		return
 	}
-	rec.fail(http.StatusInternalServerError, "%v", err)
+	// A token that is limited to a site is told so when it asks for a
+	// charger it cannot reach, whether that charger is in another site
+	// or nowhere at all. The answer is the same for both, so it says
+	// nothing about what other sites hold.
+	if who := r.Context().Value(callerKey{}).(caller); who.site != "" && known.Status == http.StatusNotFound {
+		rec.fail(http.StatusForbidden, "token %s is limited to site %s: %s", who.name, who.site, known.Message)
+		return
+	}
+	rec.fail(known.Status, "%s", known.Message)
 }
 
 func (s *Server) handleSpec(w http.ResponseWriter, _ *http.Request) {
@@ -472,7 +480,7 @@ func (s *Server) handleList(w http.ResponseWriter, r *http.Request) {
 	}
 	chargers, err := s.cfg.Backend.Chargers(r.Context(), site)
 	if err != nil {
-		answer(rec, err)
+		answer(rec, r, err)
 		return
 	}
 	if chargers == nil {
@@ -491,7 +499,7 @@ func (s *Server) handleInspect(w http.ResponseWriter, r *http.Request) {
 	}
 	view, err := s.cfg.Backend.Inspect(r.Context(), site, r.PathValue("charger"))
 	if err != nil {
-		answer(rec, err)
+		answer(rec, r, err)
 		return
 	}
 	writeJSON(rec, http.StatusOK, view)
@@ -527,7 +535,7 @@ func (s *Server) handleAction(w http.ResponseWriter, r *http.Request) {
 
 	results, err := s.cfg.Backend.Exec(r.Context(), site, r.PathValue("charger"), action)
 	if err != nil {
-		answer(rec, err)
+		answer(rec, r, err)
 		return
 	}
 	// The log names the chargers the action ran on, which a pattern

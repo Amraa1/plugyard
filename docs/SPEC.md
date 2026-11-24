@@ -849,8 +849,8 @@ Those stay on the command line, because each is a way from "can call the API" to
 | `200` | Done. For an action: carried out on every charger it named |
 | `400` | The call has a mistake: an option that is missing, wrong or not taken, or a body that is not JSON |
 | `401` | A token is needed, and none or a wrong one was sent |
-| `403` | The token may not do this: it is read-only, or limited to another site. Also a call a browser sent from another website |
-| `404` | No such charger, site, action or address |
+| `403` | The token may not do this: it is read-only, or it is limited to a site and asked for something outside it. Also a call a browser sent from another website |
+| `404` | No such charger, site, action or address. A token limited to a site is answered with `403` instead |
 | `409` | The action could not be carried out on at least one charger, with the results; or the charger is stopped, or its charge point ID is in two sites |
 | `415` | An action whose body is not declared as JSON |
 
@@ -865,7 +865,7 @@ Those stay on the command line, because each is a way from "can call the API" to
 - **A token** is made with `plugyard api token create <name>` and sent as `Authorization: Bearer <token>`.
   - It is shown once. plugyard keeps a hash, in a file in its data directory that only the user can read.
   - It has a name, which the log of calls shows. Each team or tool gets its own.
-  - `--site` limits it to the chargers of one site: it sees and reaches no others.
+  - `--site` limits it to the chargers of one site: it sees and reaches no others. A charger it cannot reach is answered with `403` and the name of the site it is limited to, whether that charger is in another site or does not exist. The answer is the same for both, so it tells nothing about other sites.
   - `--read-only` makes one that can look and not act.
   - Removing it takes effect at once.
 - **A web page in a browser cannot act through the API.** A page a developer has open can send requests to their own machine, and an API there with no token would let any website unplug a charger. Three things prevent it: a call to an API that listens on the machine only must name that machine as its host; a call must not come from a page of another origin; and an action must declare its body as JSON, which a page cannot do across origins without first asking a question the API never answers with yes.

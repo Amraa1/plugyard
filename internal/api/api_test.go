@@ -291,6 +291,15 @@ func TestTokens(t *testing.T) {
 	if status, body := call(t, s, "GET", "/v1/chargers?site=yard", staging, ""); status != 403 || !strings.Contains(body, "token mobile-team is limited to site staging") {
 		t.Errorf("a token of site staging asking for site yard = %d %s", status, body)
 	}
+	// What it cannot reach is forbidden to it, whether it is in another
+	// site or nowhere: the answer does not tell the two apart. A token
+	// for every site is told that there is no such charger.
+	if status, body := call(t, s, "GET", "/v1/chargers/CP-9", staging, ""); status != 403 || body != `{"error":"token mobile-team is limited to site staging: no charger matches \"CP-9\""}` {
+		t.Errorf("a token of site staging asking for a charger it cannot reach = %d %s", status, body)
+	}
+	if status, _ := call(t, s, "GET", "/v1/chargers/CP-9", full, ""); status != 404 {
+		t.Errorf("a token for every site asking for a charger that is not there = %d", status)
+	}
 	// A read-only token looks and does not act.
 	if status, _ := call(t, s, "GET", "/v1/chargers/CP-1", looker, ""); status != 200 {
 		t.Errorf("inspect with a read-only token = %d", status)
