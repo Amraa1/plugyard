@@ -369,3 +369,29 @@ func showLogs(ctx context.Context, out io.Writer, dir string, sites map[string]m
 		}
 	}
 }
+
+// diagnosticsLog returns the lines of a site's log that belong to one
+// charger and fall between two moments, as they stand in the log. A zero
+// time leaves that end open. It is the file a charger uploads for
+// GetDiagnostics.
+func diagnosticsLog(path, chargePointID string, from, to time.Time) ([]byte, error) {
+	var out bytes.Buffer
+	for _, file := range logfile.Paths(path) {
+		data, err := os.ReadFile(file)
+		if err != nil {
+			return nil, err
+		}
+		for _, line := range strings.Split(string(data), "\n") {
+			line = strings.TrimSuffix(line, "\r")
+			e, ok := parseLogLine(line)
+			switch {
+			case !ok, e.ChargePointID != chargePointID:
+			case !from.IsZero() && e.Time.Before(from):
+			case !to.IsZero() && e.Time.After(to):
+			default:
+				out.WriteString(line + "\n")
+			}
+		}
+	}
+	return out.Bytes(), nil
+}

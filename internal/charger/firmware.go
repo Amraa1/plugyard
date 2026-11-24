@@ -1,6 +1,7 @@
 package charger
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/url"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/Amraa1/plugyard/internal/ocpp/ocppj"
 	"github.com/Amraa1/plugyard/internal/ocpp/v16"
+	"github.com/Amraa1/plugyard/internal/upload"
 )
 
 // The Firmware Management profile. The charger never fetches or sends a
@@ -45,6 +47,14 @@ type transfer struct {
 	attempts      int
 	retries       int
 	retryInterval time.Duration
+
+	// What a diagnostics upload sends: a file of this name, with the log
+	// between from and to.
+	name     string
+	from, to time.Time
+	// done and err are the outcome of the upload attempt under way.
+	done bool
+	err  error
 }
 
 // newTransfer starts a transfer that waits until start.
@@ -156,10 +166,18 @@ func (c *Charger) getDiagnostics(req v16.GetDiagnosticsRequest) (v16.GetDiagnost
 	now := time.Now()
 	name := fmt.Sprintf("diagnostics-%s-%s.log", c.cfg.ID, now.UTC().Format("20060102T150405Z"))
 	if c.diagnostics != nil {
-		c.event("diagnostics: the upload to %s is replaced", c.diagnostics.location)
+		c.event("diagnostics: the upload to %s is replaced", upload.Redact(c.diagnostics.location))
 	}
-	c.event("diagnostics: the CSMS asked for %s to be uploaded to %s", name, req.Location)
-	c.diagnostics = newTransfer(req.Location, now.Add(actDelay), req.Retries, req.RetryInterval)
+	c.event("diagnostics: the CSMS asked for %s to be uploaded to %s", name, upload.Redact(req.Location))
+	t := newTransfer(req.Location, now.Add(actDelay), req.Retries, req.RetryInterval)
+	t.name = name
+	if req.StartTime != nil {
+		t.from = req.StartTime.Time
+	}
+	if req.StopTime != nil {
+		t.to = req.StopTime.Time
+	}
+	c.diagnostics = t
 	return v16.GetDiagnosticsResponse{FileName: name}, nil
 }
 
@@ -260,31 +278,76 @@ func (c *Charger) stepDiagnostics(now time.Time) {
 
 	switch t.step {
 	case stepWaiting:
-		t.step, t.until = stepTransfer, now.Add(c.scaled(c.cfg.Timing.Upload))
+		t.step = stepTransfer
 		t.attempts++
 		if t.attempts == 1 {
-			c.event("diagnostics: uploading to %s", t.location)
+			c.event("diagnostics: uploading to %s", upload.Redact(t.location))
 			status(v16.DiagnosticsUploading)
 		} else {
 			c.event("diagnostics: uploading again (attempt %d of %d)", t.attempts, t.retries+1)
 		}
+		t.done, t.err = false, nil
+		if c.failing[FailUpload] {
+			t.done, t.err = true, errors.New("it was told to fail")
+		} else {
+			go c.upload(c.running, t)
+		}
 
 	case stepTransfer:
-		if c.failing[FailUpload] {
+		if !t.done {
+			return
+		}
+		if t.err != nil {
 			if t.retry(now) {
-				c.event("diagnostics: the upload failed; trying again in %s", t.retryInterval)
+				c.event("diagnostics: the upload failed: %v; trying again in %s", t.err, t.retryInterval)
 				return
 			}
 			delete(c.failing, FailUpload)
 			c.diagnostics = nil
-			c.event("diagnostics: the upload failed")
+			c.event("diagnostics: the upload failed: %v", t.err)
 			status(v16.DiagnosticsUploadFailed)
 			return
 		}
 		c.diagnostics = nil
-		c.event("diagnostics: uploaded")
+		c.event("diagnostics: %s uploaded", t.name)
 		status(v16.DiagnosticsUploaded)
 	}
+}
+
+// upload makes one attempt to send the diagnostics file, and leaves the
+// outcome for stepDiagnostics.
+func (c *Charger) upload(ctx context.Context, t *transfer) {
+	data, err := c.diagnosticsFile(t)
+	if err == nil {
+		var cancel func()
+		ctx, cancel = context.WithTimeout(ctx, c.cfg.Timing.UploadTimeout)
+		err = upload.Send(ctx, t.location, t.name, data)
+		cancel()
+	}
+	c.mu.Lock()
+	defer c.unlock()
+	// The outcome of an upload that was replaced meanwhile is of no use.
+	if c.diagnostics == t && !c.off && !c.killed {
+		t.done, t.err = true, err
+		// Report it now, not at the next tick.
+		c.stepDiagnostics(time.Now())
+	}
+}
+
+// diagnosticsFile returns what a diagnostics upload sends: the charger's
+// log for the time asked for.
+func (c *Charger) diagnosticsFile(t *transfer) ([]byte, error) {
+	var data []byte
+	if c.cfg.Diagnostics != nil {
+		var err error
+		if data, err = c.cfg.Diagnostics(t.from, t.to); err != nil {
+			return nil, fmt.Errorf("the log could not be read: %w", err)
+		}
+	}
+	if len(data) == 0 {
+		data = []byte("plugyard has no log lines of charger " + c.cfg.ID + " for the time asked for\n")
+	}
+	return data, nil
 }
 
 // transactions counts the transactions running. The caller holds c.mu.

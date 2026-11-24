@@ -412,8 +412,15 @@ func serveSaved(ctx context.Context, dir string, st *store.Store, out io.Writer,
 	if out != nil {
 		sinks = append(sinks, newLogPrinter(out))
 	}
+	// The log is also what a charger uploads when the CSMS asks for
+	// diagnostics.
+	var diagnostics func(id string, from, to time.Time) ([]byte, error)
 	var logWriter *logfile.Writer
 	if keepLog {
+		logPath := store.LogPath(dir, saved.Meta.Name)
+		diagnostics = func(id string, from, to time.Time) ([]byte, error) {
+			return diagnosticsLog(logPath, id, from, to)
+		}
 		logWriter, err = logfile.Open(store.LogPath(dir, saved.Meta.Name), saved.Meta.LogMaxSize, saved.Meta.LogFiles)
 		if err != nil {
 			return fmt.Errorf("cannot open the site's log: %w", err)
@@ -432,7 +439,8 @@ func serveSaved(ctx context.Context, dir string, st *store.Store, out io.Writer,
 				sink(e)
 			}
 		},
-		Store: st,
+		Diagnostics: diagnostics,
+		Store:       st,
 	}, members)
 	if err != nil {
 		return err

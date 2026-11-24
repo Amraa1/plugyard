@@ -45,11 +45,12 @@ type Timing struct {
 	Tick time.Duration
 	// Reboot is how long the charger is away when it reboots.
 	Reboot time.Duration
-	// Download, Install and Upload are how long a firmware download, a
-	// firmware installation and a diagnostics upload take at speed 1.
+	// Download and Install are how long a firmware download and a firmware
+	// installation take at speed 1.
 	Download time.Duration
 	Install  time.Duration
-	Upload   time.Duration
+	// UploadTimeout is how long one attempt to upload diagnostics may take.
+	UploadTimeout time.Duration
 }
 
 // Config describes one charger.
@@ -70,6 +71,9 @@ type Config struct {
 	Log func(Entry)
 	// Restore, if set, is the state saved when the charger last had power.
 	Restore *State
+	// Diagnostics, if set, returns the charger's log between two moments, as
+	// the file GetDiagnostics asks for. A zero time leaves that end open.
+	Diagnostics func(from, to time.Time) ([]byte, error)
 	// Save, if set, is given the charger's state whenever something worth
 	// keeping has changed: at once for transactions and queued messages, and
 	// every MeterSaveInterval seconds for meter readings.
@@ -107,7 +111,7 @@ const (
 	defaultReboot            = time.Second
 	defaultDownload          = 10 * time.Second
 	defaultInstall           = 10 * time.Second
-	defaultUpload            = 5 * time.Second
+	defaultUploadTimeout     = 60 * time.Second
 )
 
 // Connection states, as shown by "plugyard ps".
@@ -205,6 +209,8 @@ type Charger struct {
 	sent     atomic.Int64
 	received atomic.Int64
 
+	// running is the context of Run, under which uploads are made.
+	running context.Context
 	// cut ends Run. killed says the end is a power cut, and off that the
 	// charger has no power any more.
 	cut    func()
@@ -280,8 +286,8 @@ func New(cfg Config) (*Charger, error) {
 	if cfg.Timing.Install <= 0 {
 		cfg.Timing.Install = defaultInstall
 	}
-	if cfg.Timing.Upload <= 0 {
-		cfg.Timing.Upload = defaultUpload
+	if cfg.Timing.UploadTimeout <= 0 {
+		cfg.Timing.UploadTimeout = defaultUploadTimeout
 	}
 
 	c := &Charger{
@@ -338,6 +344,7 @@ func (c *Charger) Run(ctx context.Context) error {
 		return errors.New("the charger has already been powered on once")
 	}
 	c.cut = cut
+	c.running = ctx
 	if c.killed {
 		cut()
 	}

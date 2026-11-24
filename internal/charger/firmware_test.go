@@ -2,8 +2,12 @@ package charger_test
 
 import (
 	"errors"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -224,8 +228,21 @@ func TestFirmwareFailures(t *testing.T) {
 }
 
 func TestDiagnostics(t *testing.T) {
+	// files is where the CSMS wants the diagnostics.
+	var mu sync.Mutex
+	uploaded := map[string]string{}
+	files := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		uploaded[r.URL.Path] = string(body)
+		mu.Unlock()
+	}))
+	defer files.Close()
+
 	csms := csmstest.Start(t)
-	r := online(t, csms, charger.Config{})
+	r := online(t, csms, charger.Config{Diagnostics: func(from, to time.Time) ([]byte, error) {
+		return []byte("the log from " + from.Format("15:04") + " to " + to.Format("15:04") + "\n"), nil
+	}})
 	get := func(req v16.GetDiagnosticsRequest) string {
 		t.Helper()
 		var resp v16.GetDiagnosticsResponse
@@ -242,19 +259,66 @@ func TestDiagnostics(t *testing.T) {
 	}
 	waitTransfer(t, csms, v16.ActionDiagnosticsStatusNotification, v16.DiagnosticsIdle)
 
-	name := get(v16.GetDiagnosticsRequest{Location: "ftp://files.example/diagnostics/"})
+	// The file really arrives where the CSMS said, with the log of the time
+	// it asked for.
+	from, to := time.Date(2026, 1, 2, 10, 0, 0, 0, time.UTC), time.Date(2026, 1, 2, 11, 0, 0, 0, time.UTC)
+	name := get(v16.GetDiagnosticsRequest{
+		Location:  strings.Replace(files.URL, "http://", "http://plug:s3cret@", 1) + "/diagnostics/",
+		StartTime: &v16.Time{Time: from},
+		StopTime:  &v16.Time{Time: to},
+	})
 	if !strings.HasPrefix(name, "diagnostics-CP-1-") || !strings.HasSuffix(name, ".log") {
 		t.Errorf("GetDiagnostics named the file %q", name)
 	}
 	waitTransfer(t, csms, v16.ActionDiagnosticsStatusNotification,
 		v16.DiagnosticsIdle, v16.DiagnosticsUploading, v16.DiagnosticsUploaded)
+	mu.Lock()
+	if got := uploaded["/diagnostics/"+name]; got != "the log from 10:00 to 11:00\n" {
+		t.Errorf("the server holds %q, want the log of the time asked for", uploaded)
+	}
+	mu.Unlock()
+	// The password of the location stays out of the events.
+	r.log.waitFor(t, charger.Event, "diagnostics: "+name+" uploaded")
+	if r.log.has(charger.Event, "s3cret") {
+		t.Error("an event shows the password of the location")
+	}
 
-	must(t)(r.Fail(charger.FailUpload))
-	get(v16.GetDiagnosticsRequest{Location: "ftp://files.example/diagnostics/", Retries: intPtr(2)})
+	// A place that cannot be reached fails for real, after the retries asked
+	// for.
+	get(v16.GetDiagnosticsRequest{Location: "http://127.0.0.1:1/diagnostics/", Retries: intPtr(1)})
 	waitTransfer(t, csms, v16.ActionDiagnosticsStatusNotification,
 		v16.DiagnosticsIdle, v16.DiagnosticsUploading, v16.DiagnosticsUploaded,
 		v16.DiagnosticsUploading, v16.DiagnosticsUploadFailed)
+	r.log.waitFor(t, charger.Event, "diagnostics: uploading again (attempt 2 of 2)")
+	r.log.waitFor(t, charger.Event, "diagnostics: the upload failed: ")
+
+	// So does one that was told to fail, without anything being sent.
+	must(t)(r.Fail(charger.FailUpload))
+	get(v16.GetDiagnosticsRequest{Location: files.URL + "/told-to-fail/", Retries: intPtr(2)})
+	waitTransfer(t, csms, v16.ActionDiagnosticsStatusNotification,
+		v16.DiagnosticsIdle, v16.DiagnosticsUploading, v16.DiagnosticsUploaded,
+		v16.DiagnosticsUploading, v16.DiagnosticsUploadFailed,
+		v16.DiagnosticsUploading, v16.DiagnosticsUploadFailed)
 	r.log.waitFor(t, charger.Event, "diagnostics: uploading again (attempt 3 of 3)")
+	mu.Lock()
+	if len(uploaded) != 1 {
+		t.Errorf("the server holds %v, want only the first file", uploaded)
+	}
+	mu.Unlock()
+
+	// With no log to send, the file says so.
+	bare := csmstest.Start(t)
+	online(t, bare, charger.Config{})
+	var resp v16.GetDiagnosticsResponse
+	if err := bare.Call(ctx, "CP-1", v16.ActionGetDiagnostics, v16.GetDiagnosticsRequest{Location: files.URL + "/bare/"}, &resp); err != nil {
+		t.Fatalf("GetDiagnostics: %v", err)
+	}
+	waitTransfer(t, bare, v16.ActionDiagnosticsStatusNotification, v16.DiagnosticsUploading, v16.DiagnosticsUploaded)
+	mu.Lock()
+	if got := uploaded["/bare/"+resp.FileName]; got != "plugyard has no log lines of charger CP-1 for the time asked for\n" {
+		t.Errorf("a charger with no log uploaded %q", got)
+	}
+	mu.Unlock()
 
 	err := csms.Call(ctx, "CP-1", v16.ActionGetDiagnostics, v16.GetDiagnosticsRequest{}, nil)
 	var callErr *ocppj.CallError
