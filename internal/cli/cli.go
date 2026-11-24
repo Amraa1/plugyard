@@ -105,7 +105,7 @@ func newRoot() *cobra.Command {
 
 	root.AddCommand(newExec(), newInfo(), newInit(), newInspect(), newLogs(), newPs(), newRun(), newScenario(), newSchema(), newSite(), newStats(), newUninstall(), newUpdate(), newVersion(), newWait())
 	root.AddCommand(newPowerCommands()...)
-	root.AddCommand(newAgents())
+	root.AddCommand(newAgents(), newCharger())
 
 	// The help of the root command ends with a line for AI agents, which
 	// read the help before anything else.
