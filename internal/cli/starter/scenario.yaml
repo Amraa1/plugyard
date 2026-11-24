@@ -1,0 +1,17 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/Amraa1/plugyard/main/schemas/scenario.schema.json
+#
+# A scenario is a list of timed actions, carried out against a running site.
+#
+#   plugyard scenario validate scenario.yaml    check it and show the plan
+#   plugyard scenario run scenario.yaml         run it
+#
+# Times follow the site's speed: with "plugyard site up --speed 60" these
+# twenty minutes take twenty seconds.
+name: first-charge
+steps:
+  - { at: 0s,  charger: "CP-*", do: plug, soc: 30% }
+  - { at: 5s,  charger: "CP-*", do: tap, tag: 04A1B2C3 }
+  # A fault in the middle of charging: does your CSMS notice?
+  - { at: 10m, charger: CP-2, do: fault, code: GroundFailure }
+  - { at: 12m, charger: CP-2, do: clear }
+  - { at: 20m, charger: "CP-*", do: unplug }

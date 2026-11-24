@@ -1,0 +1,64 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://raw.githubusercontent.com/Amraa1/plugyard/main/schemas/scenario.schema.json",
+  "title": "plugyard scenario file",
+  "description": "A scenario: timed actions carried out against a running site.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["name", "steps"],
+  "properties": {
+    "name": { "description": "The name of the scenario.", "type": "string", "minLength": 1 },
+    "steps": {
+      "description": "The steps, written in the order they run.",
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["at", "charger", "do"],
+        "properties": {
+          "at": {
+            "description": "When the step runs, counted from the start of the run: 0s, 30s, 10m, 1h30m. Times follow the site's speed.",
+            "type": ["string", "number"]
+          },
+          "charger": {
+            "description": "A charge point ID, a charger's name, or a pattern such as \"FAST-*\".",
+            "type": ["string", "number"]
+          },
+          "do": {
+            "description": "The action: one of the actions of \"plugyard exec\", or stop, start, restart or kill.",
+            "enum": ["plug", "unplug", "tap", "fault", "clear", "offline", "online", "reboot", "stop", "start", "restart", "kill"]
+          },
+          "connector": {
+            "description": "The connector number. Default 1. For fault and clear, 0 means the charger as a whole.",
+            "type": "integer",
+            "minimum": 0
+          },
+          "tag": { "description": "tap: the tag presented. At most 20 characters.", "type": ["string", "number"], "maxLength": 20 },
+          "ev": { "description": "plug: an EV preset of the site file.", "type": "string" },
+          "battery": { "description": "plug: battery capacity, such as 60kWh.", "type": "string" },
+          "soc": { "description": "plug: state of charge at plug-in, such as 20%.", "type": ["string", "number"] },
+          "maxPower": { "description": "plug: the most power the EV accepts, such as 11kW.", "type": "string" },
+          "targetSoc": { "description": "plug: state of charge at which the EV stops, such as 80%.", "type": ["string", "number"] },
+          "curve": { "description": "plug: the charge curve.", "enum": ["standard", "dc-fast"] },
+          "code": {
+            "description": "fault: the OCPP 1.6 error code.",
+            "enum": [
+              "ConnectorLockFailure", "EVCommunicationError", "GroundFailure", "HighTemperature",
+              "InternalError", "LocalListConflict", "OtherError", "OverCurrentFailure",
+              "OverVoltage", "PowerMeterFailure", "PowerSwitchFailure", "ReaderFailure",
+              "ResetFailure", "UnderVoltage", "WeakSignal"
+            ]
+          },
+          "info": { "description": "fault: free text about the fault. At most 50 characters.", "type": "string", "maxLength": 50 },
+          "vendorCode": { "description": "fault: the vendor's own code for the fault. At most 50 characters.", "type": "string", "maxLength": 50 },
+          "for": { "description": "offline: come back online after this long, such as 30s. Without it the charger stays offline until an online step.", "type": "string" }
+        },
+        "allOf": [
+          { "if": { "properties": { "do": { "const": "tap" } } }, "then": { "required": ["tag"] } },
+          { "if": { "properties": { "do": { "const": "fault" } } }, "then": { "required": ["code"] } }
+        ]
+      }
+    }
+  }
+}

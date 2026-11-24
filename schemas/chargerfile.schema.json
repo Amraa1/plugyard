@@ -1,0 +1,79 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://raw.githubusercontent.com/Amraa1/plugyard/main/schemas/chargerfile.schema.json",
+  "title": "plugyard Chargerfile",
+  "description": "One kind of charger: its identity, connectors and default configuration. Many chargers can be made from one Chargerfile.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["vendor", "model", "firmware", "connectors"],
+  "properties": {
+    "vendor": {
+      "description": "Sent as chargePointVendor in BootNotification. At most 20 characters.",
+      "type": ["string", "number"],
+      "maxLength": 20
+    },
+    "model": {
+      "description": "Sent as chargePointModel in BootNotification. At most 20 characters.",
+      "type": ["string", "number"],
+      "maxLength": 20
+    },
+    "firmware": {
+      "description": "Sent as firmwareVersion in BootNotification. At most 50 characters.",
+      "type": ["string", "number"],
+      "maxLength": 50
+    },
+    "connectors": {
+      "description": "The charger's connectors, numbered from 1 in order.",
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "type", "maxPower"],
+        "properties": {
+          "id": { "description": "The connector number: 1 for the first, 2 for the second, and so on.", "type": "integer", "minimum": 1 },
+          "type": { "description": "The plug type, such as CCS2, CHAdeMO or Type2. It is for your own reading; the CSMS does not see it.", "type": "string" },
+          "maxPower": {
+            "description": "The most power the connector delivers, such as 50kW or 7.4kW.",
+            "type": "string",
+            "pattern": "^\\s*[0-9]+(\\.[0-9]+)?\\s*([kKmM]?[wW])\\s*$"
+          }
+        }
+      }
+    },
+    "config": {
+      "description": "Default values of OCPP configuration keys, such as HeartbeatInterval. The CSMS can read them and change the ones that are not read-only.",
+      "type": "object",
+      "additionalProperties": { "type": ["string", "number", "boolean"] }
+    },
+    "dataTransfer": {
+      "description": "Vendor IDs whose DataTransfer requests from the CSMS are answered Accepted.",
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "voltage": {
+      "description": "The supply voltage in volts. With phases, it turns a charging profile limit in amps into power. Default 230.",
+      "type": "number",
+      "exclusiveMinimum": 0
+    },
+    "phases": {
+      "description": "The number of phases of the supply. Default 3.",
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 3
+    },
+    "onEvFull": {
+      "description": "What happens when the EV is full. stop: end the transaction. suspend: report SuspendedEV and keep it open. Default stop.",
+      "enum": ["stop", "suspend"]
+    },
+    "startOn": {
+      "description": "What starts a transaction. tap: a tag is presented. plug: plugging in, using startTag. Default tap.",
+      "enum": ["tap", "plug"]
+    },
+    "startTag": {
+      "description": "The idTag used when startOn is plug. At most 20 characters.",
+      "type": ["string", "number"],
+      "maxLength": 20
+    }
+  }
+}

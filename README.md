@@ -2,11 +2,29 @@
 
 A terminal tool that simulates EV chargers, so you can develop and test a CSMS (charging station management system) without hardware. Its command line follows Docker's conventions: a file describes a kind of charger, a YAML file starts many of them together, and `ps` and `exec` operate on the running ones.
 
-> **Status: early implementation.** The V1 design is written down in [docs/SPEC.md](docs/SPEC.md). Chargers can be started one at a time or as a site of many, run transactions driven from a second terminal, keep their state when stopped, obey the CSMS, including its charging profiles, fail on demand, and can be watched and scripted. Scenarios and prebuilt binaries are not built yet; see [What is not built yet](#what-is-not-built-yet).
+> **Status: early implementation.** The V1 design is written down in [docs/SPEC.md](docs/SPEC.md). Chargers can be started one at a time or as a site of many, run transactions driven from a second terminal, keep their state when stopped, obey the CSMS, including its charging profiles, fail on demand, can be watched and scripted, and can be driven by scenario files. Prebuilt binaries are not available yet; see [What is not built yet](#what-is-not-built-yet).
 
-## Quick start: twenty chargers
+## Quick start
 
 You need a CSMS that accepts OCPP 1.6J over WebSocket. The examples assume it listens at `ws://localhost:9000/ocpp`.
+
+```sh
+plugyard init my-site --csms ws://localhost:9000/ocpp   # writes site.yaml, Chargerfile and scenario.yaml
+cd my-site
+plugyard site up                                        # three chargers connect; Ctrl+C stops them
+```
+
+In a second terminal:
+
+```sh
+plugyard ps                              # the three chargers and their connectors
+plugyard scenario run scenario.yaml      # plugs in, charges, faults one charger and unplugs, by script
+plugyard logs CP-1                       # every OCPP message CP-1 exchanged with your CSMS
+```
+
+That is a working setup. The rest of this page explains the files `init` wrote and what else you can do.
+
+## The files, step by step: twenty chargers
 
 **1. Describe a kind of charger** in a file called `Chargerfile`:
 
@@ -92,6 +110,37 @@ plugyard stats --format json | jq -s 'map(.powerW) | add'
 # The value of one configuration key
 plugyard inspect FAST-1 --format json | jq -r '.configuration[] | select(.key == "HeartbeatInterval").value'
 ```
+
+### Run a scenario
+
+A scenario is a file of timed actions, for tests that run by themselves:
+
+```yaml
+name: commute
+steps:
+  - { at: 0s,  charger: "FAST-*", do: plug, ev: longrange }
+  - { at: 5s,  charger: "FAST-*", do: tap, tag: 04A1B2C3 }
+  - { at: 10m, charger: FAST-3, do: fault, code: GroundFailure }
+  - { at: 20m, charger: FAST-5, do: kill }      # a power cut mid-charge
+  - { at: 21m, charger: FAST-5, do: start }
+  - { at: 30m, charger: "FAST-*", do: unplug }
+```
+
+```sh
+plugyard scenario validate commute.yaml      # check it, and see which chargers each step would act on
+plugyard scenario run commute.yaml           # run it against the running site
+plugyard scenario run commute.yaml --step 3  # try one step now, while you are writing it
+```
+
+- **A step does what `exec` does**, with the same options, or powers chargers with `stop`, `start`, `restart` and `kill`.
+- **Times follow the site's speed.** Against `plugyard site up --speed 60`, these thirty minutes take thirty seconds, and the EVs have charged for thirty minutes.
+- **It fits CI.** The exit code is `0` when everything succeeded, `1` when an action failed, and `2` when the file has a mistake. `--fail-fast` stops at the first failure, and `--format json` prints one object per action.
+
+A longer one, with a network drop and a power cut, is in [examples/scenario.yaml](examples/scenario.yaml).
+
+### Editor support
+
+The files `plugyard init` writes start with a line that names their JSON schema, so an editor with YAML support (VS Code with the YAML extension, JetBrains IDEs) completes settings and marks mistakes as you type. For your own files, copy that first line, or print a schema with `plugyard schema site`, `plugyard schema chargerfile` or `plugyard schema scenario`.
 
 ### Chargers remember
 
@@ -218,7 +267,6 @@ It runs in the foreground until you press Ctrl+C. Its state is saved too: run th
 ## What is not built yet
 
 - Firmware updates, local authorization lists and reservations; the charger answers these `NotSupported`
-- `scenario run` and `init`
 - Prebuilt binaries
 
 ## Building from source

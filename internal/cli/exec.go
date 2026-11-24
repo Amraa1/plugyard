@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -146,53 +147,10 @@ func newExec() *cobra.Command {
 			}
 			defer w.close()
 
-			// Actions need a charger that is powered on.
-			matched, err := w.match(pattern, func(t target) bool { return t.state.Powered })
+			results, err := execOn(cmd.Context(), w, pattern, req)
 			if err != nil {
 				return err
 			}
-			if len(matched) == 0 {
-				if stopped, _ := w.match(pattern, nil); len(stopped) > 0 && !isPattern(pattern) {
-					return fmt.Errorf("charger %q is stopped; start it with \"plugyard start %s\"", pattern, pattern)
-				}
-				return fmt.Errorf("no running charger matches %q", pattern)
-			}
-
-			// Work out which chargers the argument names, site by site.
-			type group struct {
-				client *control.Client
-				ids    []string
-			}
-			var targets []*group
-			bySite := map[string]*group{}
-			for _, t := range matched {
-				g := bySite[t.state.Site]
-				if g == nil {
-					g = &group{client: t.client}
-					bySite[t.state.Site] = g
-					targets = append(targets, g)
-				}
-				g.ids = append(g.ids, t.state.ChargePointID)
-			}
-
-			var results []control.ExecResult
-			for _, t := range targets {
-				req.ChargePointIDs = t.ids
-				got, err := t.client.Exec(cmd.Context(), req)
-				if err != nil {
-					// The whole site failed to answer: every charger in it
-					// gets the reason.
-					for _, id := range t.ids {
-						got = append(got, control.ExecResult{
-							ChargePointID: id,
-							Connector:     req.Connector,
-							Message:       fmt.Sprintf("site %q did not answer: %v", t.client.Info.Site, err),
-						})
-					}
-				}
-				results = append(results, got...)
-			}
-			sort.SliceStable(results, func(i, j int) bool { return results[i].ChargePointID < results[j].ChargePointID })
 
 			failed := 0
 			for _, r := range results {
@@ -231,6 +189,60 @@ func newExec() *cobra.Command {
 	flags.DurationVar(&duration, "for", 0, "offline: come back online after this long, such as 30s")
 	addFormatFlag(cmd, &format)
 	return cmd
+}
+
+// execOn runs an action on the running chargers a charger argument names,
+// and returns one result per charger, sorted by charge point ID. An error
+// means the action ran nowhere.
+func execOn(ctx context.Context, w *world, pattern string, req control.ExecRequest) ([]control.ExecResult, error) {
+	// Actions need a charger that is powered on.
+	matched, err := w.match(pattern, func(t target) bool { return t.state.Powered })
+	if err != nil {
+		return nil, err
+	}
+	if len(matched) == 0 {
+		if stopped, _ := w.match(pattern, nil); len(stopped) > 0 && !isPattern(pattern) {
+			return nil, fmt.Errorf("charger %q is stopped; start it with \"plugyard start %s\"", pattern, pattern)
+		}
+		return nil, fmt.Errorf("no running charger matches %q", pattern)
+	}
+
+	// Work out which chargers the argument names, site by site.
+	type group struct {
+		client *control.Client
+		ids    []string
+	}
+	var targets []*group
+	bySite := map[string]*group{}
+	for _, t := range matched {
+		g := bySite[t.state.Site]
+		if g == nil {
+			g = &group{client: t.client}
+			bySite[t.state.Site] = g
+			targets = append(targets, g)
+		}
+		g.ids = append(g.ids, t.state.ChargePointID)
+	}
+
+	var results []control.ExecResult
+	for _, t := range targets {
+		req.ChargePointIDs = t.ids
+		got, err := t.client.Exec(ctx, req)
+		if err != nil {
+			// The whole site failed to answer: every charger in it
+			// gets the reason.
+			for _, id := range t.ids {
+				got = append(got, control.ExecResult{
+					ChargePointID: id,
+					Connector:     req.Connector,
+					Message:       fmt.Sprintf("site %q did not answer: %v", t.client.Info.Site, err),
+				})
+			}
+		}
+		results = append(results, got...)
+	}
+	sort.SliceStable(results, func(i, j int) bool { return results[i].ChargePointID < results[j].ChargePointID })
+	return results, nil
 }
 
 func parseEVFlags(battery, soc, maxPower, targetSoC, curve string) (ev.Overrides, error) {

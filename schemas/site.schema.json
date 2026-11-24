@@ -1,0 +1,91 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://raw.githubusercontent.com/Amraa1/plugyard/main/schemas/site.schema.json",
+  "title": "plugyard site file",
+  "description": "A site: a named group of chargers that start and stop together. Any value may hold ${VAR} or ${VAR:-fallback}, which is replaced by an environment variable.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["name", "chargers"],
+  "definitions": {
+    "csms": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "url": { "description": "The address of the CSMS, starting with ws:// or wss://. The charge point ID is appended.", "type": "string" },
+        "password": { "description": "Password for HTTP Basic authentication. Keep it out of the file with ${CSMS_PASSWORD}.", "type": "string" },
+        "insecureSkipVerify": { "description": "Do not verify the CSMS's TLS certificate.", "type": ["boolean", "string"] }
+      }
+    },
+    "ev": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "battery": { "description": "Battery capacity, such as 60kWh.", "type": "string" },
+        "soc": { "description": "State of charge at plug-in, such as 20%.", "type": ["string", "number"] },
+        "maxPower": { "description": "The most power the EV accepts, such as 11kW. Without it the connector's maximum applies.", "type": "string" },
+        "targetSoc": { "description": "State of charge at which the EV stops charging, such as 80%.", "type": ["string", "number"] },
+        "curve": {
+          "description": "The charge curve: standard, dc-fast, or a list of [state of charge, share of maximum power] pairs such as [[0%, 100%], [80%, 100%], [100%, 10%]].",
+          "oneOf": [
+            { "type": "string" },
+            {
+              "type": "array",
+              "minItems": 2,
+              "items": { "type": "array", "minItems": 2, "maxItems": 2, "items": { "type": ["string", "number"] } }
+            }
+          ]
+        }
+      }
+    }
+  },
+  "properties": {
+    "name": { "description": "The name of the site, unique on this machine.", "type": "string", "minLength": 1 },
+    "csms": { "description": "The CSMS every charger connects to. A charger entry can override any part of it.", "$ref": "#/definitions/csms" },
+    "speed": { "description": "How many times faster than real time EVs charge. Default 1.", "type": ["number", "string"] },
+    "connectRate": { "description": "The most new connections to open per second. 0, the default, means no limit.", "type": ["number", "string"] },
+    "log": {
+      "description": "The cap of the site's log. Default: 3 files of 10MB.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "maxSize": { "description": "The most one log file holds, such as 10MB. At least 1kB.", "type": "string" },
+        "files": { "description": "How many log files are kept, from 1 to 100.", "type": ["integer", "string"] }
+      }
+    },
+    "evs": {
+      "description": "EV presets, used with \"plugyard exec <charger> plug --ev <name>\".",
+      "type": "object",
+      "additionalProperties": { "$ref": "#/definitions/ev" }
+    },
+    "chargers": {
+      "description": "The chargers of the site. Each entry makes one or more chargers from a Chargerfile.",
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["model"],
+        "properties": {
+          "model": { "description": "Path of the Chargerfile, relative to this file.", "type": "string" },
+          "name": { "description": "A name for the charger, unique on this machine. Only for an entry that makes one charger.", "type": "string" },
+          "count": { "description": "How many chargers to make. Default 1.", "type": ["integer", "string"] },
+          "id": { "description": "The charge point ID. With count above 1 it needs {n} for the number, or {n:03} to pad it: \"FAST-{n:03}\".", "type": ["string", "number"] },
+          "start": { "description": "The number {n} starts from. Default 1.", "type": ["integer", "string"] },
+          "ids": {
+            "description": "An explicit list of charge point IDs, in place of id, count and start.",
+            "type": "array",
+            "minItems": 1,
+            "items": { "type": ["string", "number"] }
+          },
+          "ev": { "description": "The EV preset plugged in when a plug names none.", "type": "string" },
+          "config": {
+            "description": "OCPP configuration keys that differ from the Chargerfile's for these chargers.",
+            "type": "object",
+            "additionalProperties": { "type": ["string", "number", "boolean"] }
+          },
+          "csms": { "description": "Parts of the CSMS settings that differ for these chargers.", "$ref": "#/definitions/csms" }
+        }
+      }
+    }
+  }
+}

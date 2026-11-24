@@ -15,7 +15,7 @@ import (
 
 // ProtocolVersion changes whenever requests or answers change shape. A
 // command only talks to a site that speaks the same version.
-const ProtocolVersion = 5
+const ProtocolVersion = 6
 
 const (
 	socketPrefix = "s-"
@@ -38,6 +38,8 @@ type Info struct {
 	Powered int `json:"powered"`
 	// CSMS lists the distinct CSMS URLs the site connects to.
 	CSMS []string `json:"csms"`
+	// Speed is how many times faster than real time EVs charge.
+	Speed float64 `json:"speed"`
 }
 
 // ChargerState is a charger's state together with the site it runs in.
