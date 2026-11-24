@@ -40,16 +40,16 @@ func TestDiagnosticsUploadTheLogOfTheCharger(t *testing.T) {
 		if err := csms.Call(context.Background(), "CP-1", v16.ActionGetDiagnostics, req, &resp); err != nil {
 			t.Fatalf("GetDiagnostics: %v", err)
 		}
-		var file string
-		eventually(t, "the diagnostics file arrives", func() bool {
-			mu.Lock()
-			defer mu.Unlock()
-			var ok bool
-			file, ok = uploaded["/diagnostics/"+resp.FileName]
-			return ok
-		})
-		// Uploading and Uploaded, for each request.
+		// Uploading and Uploaded, for each request. Only then is the file
+		// that of this request: two requests within one second get the
+		// same file name, and the later upload replaces the earlier one.
 		csms.WaitForCalls(t, "CP-1", v16.ActionDiagnosticsStatusNotification, 2*asked)
+		mu.Lock()
+		defer mu.Unlock()
+		file, ok := uploaded["/diagnostics/"+resp.FileName]
+		if !ok {
+			t.Fatalf("no file %s was uploaded", resp.FileName)
+		}
 		return file
 	}
 
