@@ -1,6 +1,7 @@
 package charger
 
 import (
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -27,22 +28,26 @@ type keySpec struct {
 // knownKeys are the configuration keys the charger acts on. Keys a
 // Chargerfile adds besides these are text the CSMS can read and change.
 var knownKeys = map[string]keySpec{
-	"AllowOfflineTxForUnknownId":      {kind: kindBool},
-	"AuthorizationCacheEnabled":       {kind: kindBool},
-	"AuthorizeRemoteTxRequests":       {kind: kindBool},
-	"ConnectionTimeOut":               {kind: kindInt},
-	"GetConfigurationMaxKeys":         {kind: kindInt, readonly: true},
-	"HeartbeatInterval":               {kind: kindInt},
-	"LocalAuthorizeOffline":           {kind: kindBool},
-	"MeterSaveInterval":               {kind: kindInt},
-	"MeterValueSampleInterval":        {kind: kindInt},
-	"MeterValuesSampledData":          {kind: kindMeasurands},
-	"NumberOfConnectors":              {kind: kindInt, readonly: true},
-	"StopTransactionOnInvalidId":      {kind: kindBool},
-	"StopTxnSampledData":              {kind: kindMeasurands},
-	"SupportedFeatureProfiles":        {kind: kindText, readonly: true},
-	"TransactionMessageAttempts":      {kind: kindInt},
-	"TransactionMessageRetryInterval": {kind: kindInt},
+	"AllowOfflineTxForUnknownId":              {kind: kindBool},
+	"AuthorizationCacheEnabled":               {kind: kindBool},
+	"AuthorizeRemoteTxRequests":               {kind: kindBool},
+	"ChargeProfileMaxStackLevel":              {kind: kindInt, readonly: true},
+	"ChargingScheduleAllowedChargingRateUnit": {kind: kindText, readonly: true},
+	"ChargingScheduleMaxPeriods":              {kind: kindInt, readonly: true},
+	"MaxChargingProfilesInstalled":            {kind: kindInt, readonly: true},
+	"ConnectionTimeOut":                       {kind: kindInt},
+	"GetConfigurationMaxKeys":                 {kind: kindInt, readonly: true},
+	"HeartbeatInterval":                       {kind: kindInt},
+	"LocalAuthorizeOffline":                   {kind: kindBool},
+	"MeterSaveInterval":                       {kind: kindInt},
+	"MeterValueSampleInterval":                {kind: kindInt},
+	"MeterValuesSampledData":                  {kind: kindMeasurands},
+	"NumberOfConnectors":                      {kind: kindInt, readonly: true},
+	"StopTransactionOnInvalidId":              {kind: kindBool},
+	"StopTxnSampledData":                      {kind: kindMeasurands},
+	"SupportedFeatureProfiles":                {kind: kindText, readonly: true},
+	"TransactionMessageAttempts":              {kind: kindInt},
+	"TransactionMessageRetryInterval":         {kind: kindInt},
 }
 
 // maxConfigKeys is how many keys one GetConfiguration answer may carry.
@@ -154,9 +159,7 @@ func validValue(kind keyKind, value string) bool {
 			return true
 		}
 		for _, name := range strings.Split(value, ",") {
-			switch strings.TrimSpace(name) {
-			case v16.MeasurandEnergy, v16.MeasurandPower, v16.MeasurandSoC:
-			default:
+			if !slices.Contains(v16.Measurands, strings.TrimSpace(name)) {
 				return false
 			}
 		}

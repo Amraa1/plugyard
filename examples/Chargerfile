@@ -11,5 +11,7 @@ config:
   HeartbeatInterval: 300
   MeterValueSampleInterval: 60
 # dataTransfer: [com.acme]    # vendor IDs whose DataTransfer requests are accepted
+# voltage: 400                # the supply, for charging profile limits given in amps:
+# phases: 1                   # power = amps x voltage x phases (default 230 V, 3 phases)
 onEvFull: stop     # stop | suspend
 startOn: tap       # tap | plug

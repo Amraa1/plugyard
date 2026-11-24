@@ -68,6 +68,10 @@ _Avoid_: Command, operation, event
 Something wrong with a connector or with the charger as a whole, reported to the CSMS with an OCPP error code until it is cleared.
 _Avoid_: Error (an error is an answer to a message), failure, alarm
 
+**Charging profile**:
+A limit over time that the CSMS puts on charging, for one transaction, for every transaction, or for the charger as a whole.
+_Avoid_: Schedule (a schedule is the part of a profile that holds the limits), power limit, throttle
+
 **Charge curve**:
 The share of its maximum power that an EV accepts at each state of charge.
 _Avoid_: Power curve, charging profile (an OCPP term for a limit the CSMS sets)

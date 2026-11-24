@@ -77,12 +77,20 @@ func (e *EV) Full() bool { return e.soc >= e.params.TargetSoC }
 // as a fast-charging car does on a slow charger. An EV with no maximum of
 // its own takes the connector's as its maximum.
 func (e *EV) Power(offeredW float64) float64 {
+	return e.PowerWithin(offeredW, offeredW)
+}
+
+// PowerWithin is Power for a connector that can deliver connectorW and
+// offers only limitW of it for now, as under a charging profile. The limit
+// caps the power and leaves the EV's own maximum as it is.
+func (e *EV) PowerWithin(connectorW, limitW float64) float64 {
+	offeredW := min(connectorW, limitW)
 	if e.Full() || offeredW <= 0 {
 		return 0
 	}
 	maximum := e.params.MaxPowerW
 	if maximum <= 0 {
-		maximum = offeredW
+		maximum = connectorW
 	}
 	return min(offeredW, maximum*e.params.Curve.At(e.soc))
 }
@@ -91,6 +99,12 @@ func (e *EV) Power(offeredW float64) float64 {
 // returns the energy taken in Wh. There are no losses: all of it goes into
 // the battery.
 func (e *EV) Charge(offeredW float64, d time.Duration) float64 {
+	return e.ChargeWithin(offeredW, offeredW, d)
+}
+
+// ChargeWithin is Charge for a connector that can deliver connectorW and
+// offers only limitW of it for now.
+func (e *EV) ChargeWithin(connectorW, limitW float64, d time.Duration) float64 {
 	// Take steps small enough that the taper is followed closely even when
 	// d is long, as it is at high simulation speeds.
 	const maxStepSoC = 0.002
@@ -98,7 +112,7 @@ func (e *EV) Charge(offeredW float64, d time.Duration) float64 {
 	remaining := d.Hours()
 	total := 0.0
 	for remaining > 0 && !e.Full() {
-		power := e.Power(offeredW)
+		power := e.PowerWithin(connectorW, limitW)
 		if power <= 0 {
 			break
 		}

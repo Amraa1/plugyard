@@ -38,6 +38,12 @@ type connector struct {
 	// advanced is the moment up to which the EV's charging has been
 	// accounted for.
 	advanced time.Time
+	// limitW is the limit charging profiles put on the transaction, or
+	// noLimit. offeredW is what the connector offers the EV under it, and
+	// suspended says that this is nothing.
+	limitW    float64
+	offeredW  float64
+	suspended bool
 
 	ev *ev.EV // nil when nothing is plugged in
 	tx *transaction
@@ -59,6 +65,9 @@ type transaction struct {
 
 	idTag       string
 	parentIDTag string
+	// started is when the transaction started. Relative charging schedules
+	// count from it.
+	started time.Time
 
 	// begin is the reading taken when the transaction started, for the
 	// transactionData of StopTransaction.
@@ -72,7 +81,10 @@ type transaction struct {
 type pendingTag struct {
 	tag    string
 	parent string
-	timer  *time.Timer
+	// profile is the TxProfile a RemoteStartTransaction gave for the
+	// transaction, or nil.
+	profile *v16.ChargingProfile
+	timer   *time.Timer
 }
 
 // Snapshot is the state of a charger at one moment.
@@ -153,6 +165,8 @@ func (k *connector) currentStatus() string {
 		return v16.StatusFaulted
 	case k.tx != nil && k.tx.evFull:
 		return v16.StatusSuspendedEV
+	case k.tx != nil && k.suspended:
+		return v16.StatusSuspendedEVSE
 	case k.tx != nil:
 		return v16.StatusCharging
 	case k.inoperative:
@@ -270,6 +284,7 @@ func (c *Charger) Plug(ctx context.Context, connectorID int, params ev.Params) (
 		p.timer.Stop()
 		k.pending = nil
 		tx = c.startTx(k, p.tag, p.parent)
+		c.installTx(k, p.profile)
 	case c.cfg.Model.StartOn == model.StartOnPlug && c.blocked(k) == "":
 		tx = c.startTx(k, c.cfg.Model.StartTag, "")
 	}
@@ -388,7 +403,7 @@ func (c *Charger) Tap(ctx context.Context, connectorID int, tag string) (string,
 		return fmt.Sprintf("tag rejected by the CSMS (%s)", info.Status), nil
 	}
 
-	outcome, tx := c.admit(k, tag, info.ParentIDTag)
+	outcome, tx := c.admit(k, tag, info.ParentIDTag, nil)
 	c.reportStatus(k)
 	c.unlock()
 	if tx != nil {
@@ -399,17 +414,20 @@ func (c *Charger) Tap(ctx context.Context, connectorID int, tag string) (string,
 
 // admit acts on a tag that may charge on a connector: it starts a
 // transaction if an EV is plugged in, and otherwise has the connector wait
-// for one. The caller holds c.mu and reports the connector's status.
-func (c *Charger) admit(k *connector, tag, parent string) (string, *transaction) {
+// for one. profile is the TxProfile a remote start gave for the transaction,
+// or nil. The caller holds c.mu and reports the connector's status.
+func (c *Charger) admit(k *connector, tag, parent string, profile *v16.ChargingProfile) (string, *transaction) {
 	if k.ev != nil {
-		return "", c.startTx(k, tag, parent)
+		tx := c.startTx(k, tag, parent)
+		c.installTx(k, profile)
+		return "", tx
 	}
 
 	timeout := c.configSeconds("ConnectionTimeOut")
 	if timeout <= 0 {
 		timeout = 60 * time.Second
 	}
-	p := &pendingTag{tag: tag, parent: parent}
+	p := &pendingTag{tag: tag, parent: parent, profile: profile}
 	p.timer = time.AfterFunc(timeout, func() {
 		c.mu.Lock()
 		defer c.mu.Unlock()
@@ -476,6 +494,7 @@ func (c *Charger) startTx(k *connector, tag, parent string) *transaction {
 		confirmed:   make(chan struct{}),
 		idTag:       tag,
 		parentIDTag: parent,
+		started:     now,
 		begin:       c.sample(k, c.configMeasurands("StopTxnSampledData"), v16.ContextTransactionBegin, now),
 	}
 	if interval := c.configSeconds("MeterValueSampleInterval"); interval > 0 {
@@ -497,6 +516,7 @@ func (c *Charger) startTx(k *connector, tag, parent string) *transaction {
 		txRef: tx.ref,
 	})
 	c.event("connector %d: transaction started with tag %s", k.id, tag)
+	c.applyLimit(k, now)
 	return tx
 }
 
@@ -578,6 +598,9 @@ func (c *Charger) stopTx(k *connector, reason, tag string) string {
 	k.tx = nil
 	k.powerW = 0
 	k.finishing = k.ev != nil
+	// A TxProfile ends with its transaction.
+	c.dropTxProfiles(k.id)
+	c.applyLimit(k, now)
 	if k.scheduled {
 		// The CSMS made the connector unavailable during the transaction.
 		k.scheduled = false
@@ -652,6 +675,7 @@ func (c *Charger) simulate(ctx context.Context) {
 func (c *Charger) advance(k *connector, now time.Time) {
 	elapsed := now.Sub(k.advanced)
 	k.advanced = now
+	c.applyLimit(k, now)
 	if k.tx == nil || k.ev == nil || k.tx.evFull {
 		return
 	}
@@ -662,7 +686,7 @@ func (c *Charger) advance(k *connector, now time.Time) {
 	if simulated <= 0 {
 		return
 	}
-	energy := k.ev.Charge(k.maxPower, simulated)
+	energy := k.ev.ChargeWithin(k.maxPower, k.offeredW, simulated)
 	k.meterWh += energy
 	k.powerW = energy / simulated.Hours()
 }
@@ -751,6 +775,23 @@ func (c *Charger) sample(k *connector, measurands []string, readingContext strin
 				Measurand: measurand,
 				Location:  "Outlet",
 				Unit:      "W",
+			})
+		case v16.MeasurandPowerOffered:
+			values = append(values, v16.SampledValue{
+				Value:     strconv.Itoa(int(math.Round(c.offeredAt(k, now)))),
+				Context:   readingContext,
+				Measurand: measurand,
+				Location:  "Outlet",
+				Unit:      "W",
+			})
+		case v16.MeasurandCurrentOffered:
+			voltage, phases := c.cfg.Model.Supply()
+			values = append(values, v16.SampledValue{
+				Value:     strconv.FormatFloat(c.offeredAt(k, now)/(voltage*float64(phases)), 'f', 1, 64),
+				Context:   readingContext,
+				Measurand: measurand,
+				Location:  "Outlet",
+				Unit:      "A",
 			})
 		case v16.MeasurandSoC:
 			if k.ev == nil {

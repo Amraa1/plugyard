@@ -10,6 +10,7 @@ import (
 
 	ocpp16 "github.com/lorenzodonini/ocpp-go/ocpp1.6"
 	"github.com/lorenzodonini/ocpp-go/ocpp1.6/core"
+	"github.com/lorenzodonini/ocpp-go/ocpp1.6/smartcharging"
 	"github.com/lorenzodonini/ocpp-go/ocpp1.6/types"
 
 	"github.com/Amraa1/plugyard/internal/charger"
@@ -129,5 +130,106 @@ func TestHandshakeAgainstIndependentCentralSystem(t *testing.T) {
 		if status.ConnectorId != i+1 || status.Status != core.ChargePointStatusAvailable || status.ErrorCode != core.NoError {
 			t.Errorf("StatusNotification %d = %+v", i, status)
 		}
+	}
+}
+
+func TestSmartChargingAgainstIndependentCentralSystem(t *testing.T) {
+	rec := &recordingCentralSystem{}
+	cs := ocpp16.NewCentralSystem(nil, nil)
+	cs.SetCoreHandler(rec)
+
+	port := freePort(t)
+	go cs.Start(port, "/{ws}")
+	t.Cleanup(cs.Stop)
+
+	powerOn(t, charger.Config{
+		ID:   "CP-1",
+		CSMS: charger.CSMS{URL: fmt.Sprintf("ws://127.0.0.1:%d", port)},
+	})
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		rec.mu.Lock()
+		booted := len(rec.statuses) >= 2
+		rec.mu.Unlock()
+		if booted {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the charger did not boot against the central system")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// ocpp-go builds each request and validates each answer.
+	fail := make(chan error, 3)
+	set := make(chan *smartcharging.SetChargingProfileConfirmation, 1)
+	profile := types.NewChargingProfile(1, 0, types.ChargingProfilePurposeTxDefaultProfile, types.ChargingProfileKindAbsolute,
+		types.NewChargingSchedule(types.ChargingRateUnitAmperes, types.NewChargingSchedulePeriod(0, 16)))
+	if err := cs.SetChargingProfile("CP-1", func(conf *smartcharging.SetChargingProfileConfirmation, err error) {
+		if err != nil {
+			fail <- err
+			return
+		}
+		set <- conf
+	}, 1, profile); err != nil {
+		t.Fatalf("SetChargingProfile: %v", err)
+	}
+	select {
+	case conf := <-set:
+		if conf.Status != smartcharging.ChargingProfileStatusAccepted {
+			t.Fatalf("SetChargingProfile answered %s", conf.Status)
+		}
+	case err := <-fail:
+		t.Fatalf("SetChargingProfile: %v", err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("no answer to SetChargingProfile")
+	}
+
+	composite := make(chan *smartcharging.GetCompositeScheduleConfirmation, 1)
+	if err := cs.GetCompositeSchedule("CP-1", func(conf *smartcharging.GetCompositeScheduleConfirmation, err error) {
+		if err != nil {
+			fail <- err
+			return
+		}
+		composite <- conf
+	}, 1, 3600, func(req *smartcharging.GetCompositeScheduleRequest) {
+		req.ChargingRateUnit = types.ChargingRateUnitAmperes
+	}); err != nil {
+		t.Fatalf("GetCompositeSchedule: %v", err)
+	}
+	select {
+	case conf := <-composite:
+		if conf.Status != smartcharging.GetCompositeScheduleStatusAccepted || conf.ChargingSchedule == nil {
+			t.Fatalf("GetCompositeSchedule answered %+v", conf)
+		}
+		periods := conf.ChargingSchedule.ChargingSchedulePeriod
+		if len(periods) != 1 || periods[0].Limit != 16 || conf.ChargingSchedule.ChargingRateUnit != types.ChargingRateUnitAmperes {
+			t.Errorf("composite schedule = %+v, want 16 A throughout", conf.ChargingSchedule)
+		}
+	case err := <-fail:
+		t.Fatalf("GetCompositeSchedule: %v", err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("no answer to GetCompositeSchedule")
+	}
+
+	cleared := make(chan *smartcharging.ClearChargingProfileConfirmation, 1)
+	if err := cs.ClearChargingProfile("CP-1", func(conf *smartcharging.ClearChargingProfileConfirmation, err error) {
+		if err != nil {
+			fail <- err
+			return
+		}
+		cleared <- conf
+	}); err != nil {
+		t.Fatalf("ClearChargingProfile: %v", err)
+	}
+	select {
+	case conf := <-cleared:
+		if conf.Status != smartcharging.ClearChargingProfileStatusAccepted {
+			t.Errorf("ClearChargingProfile answered %s", conf.Status)
+		}
+	case err := <-fail:
+		t.Fatalf("ClearChargingProfile: %v", err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("no answer to ClearChargingProfile")
 	}
 }

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"math/rand/v2"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -124,8 +125,13 @@ var defaultConfig = map[string]string{
 	"LocalAuthorizeOffline":           "true",
 	"AuthorizeRemoteTxRequests":       "false",
 	// What the charger is.
-	"SupportedFeatureProfiles": "Core,RemoteTrigger",
+	"SupportedFeatureProfiles": "Core,RemoteTrigger,SmartCharging",
 	"GetConfigurationMaxKeys":  "500",
+	// What the charger accepts in charging profiles.
+	"ChargeProfileMaxStackLevel":              strconv.Itoa(maxStackLevel),
+	"ChargingScheduleAllowedChargingRateUnit": "Current,Power",
+	"ChargingScheduleMaxPeriods":              strconv.Itoa(maxSchedulePeriods),
+	"MaxChargingProfilesInstalled":            strconv.Itoa(maxProfiles),
 	// MeterSaveInterval is plugyard's own key: how often, in seconds, meter
 	// readings are saved to disk during a transaction. It bounds the energy a
 	// power cut loses from the reported meterStop.
@@ -173,6 +179,8 @@ type Charger struct {
 	// StartTransaction the CSMS has not answered yet.
 	unconfirmed map[int]*transaction
 	nextTxRef   int
+	// profiles holds the charging profiles the CSMS installed.
+	profiles []InstalledProfile
 
 	// cut ends Run. killed says the end is a power cut, and off that the
 	// charger has no power any more.
@@ -270,6 +278,8 @@ func New(cfg Config) (*Charger, error) {
 		c.connectors = append(c.connectors, &connector{
 			id:       mc.ID,
 			maxPower: float64(mc.MaxPower),
+			limitW:   noLimit,
+			offeredW: float64(mc.MaxPower),
 			status:   v16.StatusAvailable,
 			code:     v16.ErrorCodeNoError,
 		})
@@ -736,8 +746,7 @@ func (c *Charger) configSeconds(key string) time.Duration {
 func (c *Charger) configMeasurands(key string) []string {
 	var out []string
 	for _, name := range strings.Split(c.config[key], ",") {
-		switch name = strings.TrimSpace(name); name {
-		case v16.MeasurandEnergy, v16.MeasurandPower, v16.MeasurandSoC:
+		if name = strings.TrimSpace(name); slices.Contains(v16.Measurands, name) {
 			out = append(out, name)
 		}
 	}

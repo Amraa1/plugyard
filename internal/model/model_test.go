@@ -52,6 +52,8 @@ func TestParseSpecExample(t *testing.T) {
 		OnEvFull: OnEvFullStop,
 		StartOn:  StartOnTap,
 		StartTag: "FREEVEND",
+		Voltage:  230,
+		Phases:   3,
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("Parse =\n%+v\nwant\n%+v", got, want)
@@ -161,5 +163,29 @@ func TestDataTransferVendors(t *testing.T) {
 
 	if _, err := Parse([]byte(base + "dataTransfer: [\"\"]\n")); err == nil || !strings.Contains(err.Error(), "dataTransfer[0]: the vendor ID is empty") {
 		t.Errorf("an empty vendor ID returned %v", err)
+	}
+}
+
+func TestSupply(t *testing.T) {
+	m, err := Parse([]byte(minimal + "voltage: 400\nphases: 1\n"))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if voltage, phases := m.Supply(); voltage != 400 || phases != 1 {
+		t.Errorf("Supply = %v V, %d phases; want 400 V, 1 phase", voltage, phases)
+	}
+	// A model that does not say has 3 phases of 230 V.
+	if voltage, phases := (&Model{}).Supply(); voltage != 230 || phases != 3 {
+		t.Errorf("default Supply = %v V, %d phases; want 230 V, 3 phases", voltage, phases)
+	}
+
+	for text, want := range map[string]string{
+		"voltage: 0\n": "voltage is 0, want a number of volts above zero",
+		"phases: 4\n":  "phases is 4, want 1, 2 or 3",
+		"phases: 0\n":  "phases is 0, want 1, 2 or 3",
+	} {
+		if _, err := Parse([]byte(minimal + text)); err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("%q: error = %v, want one containing %q", text, err, want)
+		}
 	}
 }

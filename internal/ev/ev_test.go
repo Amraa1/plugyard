@@ -232,3 +232,27 @@ func TestWithAppliesOnlyWhatWasGiven(t *testing.T) {
 		t.Errorf("With = %+v", got)
 	}
 }
+
+func TestALimitCapsThePowerAndLeavesTheCurveAlone(t *testing.T) {
+	// An EV with no maximum of its own, at 90%: the standard curve gives it
+	// 55% of the connector's 50 kW.
+	p := Defaults()
+	p.SoC = 0.90
+	e := New(p)
+	if got := e.PowerWithin(50000, 50000); math.Abs(got-27500) > 1 {
+		t.Fatalf("power with no limit = %v, want 27500", got)
+	}
+	// A limit above that changes nothing; one below it is what the EV gets.
+	if got := e.PowerWithin(50000, 40000); math.Abs(got-27500) > 1 {
+		t.Errorf("power under a 40 kW limit = %v, want 27500", got)
+	}
+	if got := e.PowerWithin(50000, 10000); got != 10000 {
+		t.Errorf("power under a 10 kW limit = %v, want 10000", got)
+	}
+	if got := e.PowerWithin(50000, 0); got != 0 {
+		t.Errorf("power under a limit of zero = %v, want 0", got)
+	}
+	if got := e.ChargeWithin(50000, 10000, time.Minute); math.Abs(got-10000.0/60) > 0.01 {
+		t.Errorf("a minute under a 10 kW limit gave %v Wh, want %v", got, 10000.0/60)
+	}
+}
