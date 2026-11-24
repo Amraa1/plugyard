@@ -13,6 +13,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/Amraa1/plugyard/internal/buildinfo"
+	"github.com/Amraa1/plugyard/internal/datadir"
 	"github.com/Amraa1/plugyard/internal/selfupdate"
 )
 
@@ -101,6 +102,12 @@ func newUpdate() *cobra.Command {
 					what = "sites " + joinWords(running) + " are"
 				}
 				return fmt.Errorf("%s running; stop every site first with \"plugyard site stop -s <name>\", then update. Nothing was changed", what)
+			}
+
+			if dir, err := datadir.Path(); err == nil {
+				if err := apiRunningError(ctx, dir, "update. Nothing was changed"); err != nil {
+					return err
+				}
 			}
 
 			exe, err := executablePath()

@@ -213,9 +213,9 @@ func execOn(ctx context.Context, w *world, pattern string, req control.ExecReque
 	}
 	if len(matched) == 0 {
 		if stopped, _ := w.match(pattern, nil); len(stopped) > 0 && !isPattern(pattern) {
-			return nil, fmt.Errorf("charger %q is stopped; start it with \"plugyard start %s\"", pattern, pattern)
+			return nil, &matchError{kind: matchStopped, text: fmt.Sprintf("charger %q is stopped; start it with \"plugyard start %s\"", pattern, pattern)}
 		}
-		return nil, fmt.Errorf("no running charger matches %q", pattern)
+		return nil, &matchError{kind: matchNone, text: fmt.Sprintf("no running charger matches %q", pattern)}
 	}
 
 	// Work out which chargers the argument names, site by site.

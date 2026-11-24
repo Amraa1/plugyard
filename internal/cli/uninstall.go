@@ -14,9 +14,9 @@ import (
 	"github.com/Amraa1/plugyard/internal/store"
 )
 
-// dataFilePrefix starts the name of every file plugyard keeps in its data
-// directory (see datadir.SiteBase).
-const dataFilePrefix = "s-"
+// dataFilePrefixes start the names of the files plugyard keeps in its data
+// directory: those of sites (see datadir.SiteBase) and those of the API.
+var dataFilePrefixes = []string{"s-", "api."}
 
 // programFolder is the name of a folder that was made for plugyard alone,
 // as the Windows install script makes one. Only such a folder is removed
@@ -65,8 +65,10 @@ func dataFiles(dir string) []string {
 	entries, _ := os.ReadDir(dir)
 	var files []string
 	for _, e := range entries {
-		if strings.HasPrefix(e.Name(), dataFilePrefix) {
-			files = append(files, filepath.Join(dir, e.Name()))
+		for _, prefix := range dataFilePrefixes {
+			if strings.HasPrefix(e.Name(), prefix) {
+				files = append(files, filepath.Join(dir, e.Name()))
+			}
 		}
 	}
 	return files
@@ -114,6 +116,14 @@ func newUninstall() *cobra.Command {
 				return fmt.Errorf("%s running; stop every site first with \"plugyard site stop -s <name>\", then uninstall. Nothing was removed", what)
 			}
 
+			dataDir, err := datadir.Path()
+			if err != nil {
+				return err
+			}
+			if err := apiRunningError(ctx, dataDir, "uninstall. Nothing was removed"); err != nil {
+				return err
+			}
+
 			exe, err := executablePath()
 			if err != nil {
 				return fmt.Errorf("cannot find the installed program: %w", err)
@@ -124,10 +134,6 @@ func newUninstall() *cobra.Command {
 			}
 			onPath := folder != "" && onUserPath(folder)
 
-			dataDir, err := datadir.Path()
-			if err != nil {
-				return err
-			}
 			files := dataFiles(dataDir)
 			sites, chargers := 0, 0
 			if saved, err := store.All(dataDir); err == nil {

@@ -375,6 +375,37 @@ This installs the [plugyard skill](skills/plugyard/SKILL.md) with the [skills to
 
 **Or just tell it.** An agent that has no skill needs one sentence: "use plugyard; run `plugyard agents` first". That command prints a guide written for agents, matching the version you have installed. The same guide is [`llms.txt`](llms.txt).
 
+## From another machine: the API
+
+On a shared server, the people who need a charger to do something often have no shell there: the app team wants to plug an EV in, the dashboard team wants to see a fault. The API gives them the actions of `plugyard exec` over HTTP.
+
+```sh
+plugyard api token create mobile-team --site staging   # prints the token, once
+plugyard api up -d --listen 0.0.0.0:7070               # serve it to other machines
+```
+
+From the other machine:
+
+```sh
+curl -H "Authorization: Bearer $TOKEN" https://plugyard.example.com/v1/chargers
+curl -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+     -d '{"tag": "04A1B2C3"}' https://plugyard.example.com/v1/chargers/FAST-1/tap
+```
+
+| To | Call |
+|---|---|
+| List every charger | `GET /v1/chargers` |
+| See everything about one | `GET /v1/chargers/FAST-1` |
+| Plug in, unplug, tap, fault, clear, go offline or online, reboot, fail | `POST /v1/chargers/FAST-1/<action>`, with the options as JSON |
+
+- **It listens on this machine only** unless you say otherwise, and it refuses to listen anywhere else until a token exists.
+- **Each token has a name**, can be limited to one site with `--site`, and can be `--read-only`. `plugyard api logs --charger FAST-1` shows who did what to a charger.
+- **It only acts on chargers and reads them.** Starting sites, updating plugyard and anything that touches files stay on the command line.
+- **Put HTTPS in front** when it leaves the machine: a reverse proxy, or `--tls-cert` and `--tls-key`.
+- `plugyard api spec` prints the full description as an OpenAPI document, and `plugyard api down` stops the API.
+
+The details are in [docs/SPEC.md](docs/SPEC.md), section 14.
+
 ## How many chargers
 
 One site of 2,000 chargers runs comfortably on a laptop. In the project's own test, 2,000 chargers connected in about one second, each ran a transaction with meter values, and all shut down cleanly, using under 400 MB for the site and the test CSMS together. The figures are in [docs/SPEC.md](docs/SPEC.md), section 9.

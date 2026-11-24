@@ -100,7 +100,7 @@ func loadWorld(ctx context.Context, siteName string) (*world, error) {
 	}
 	if siteName != "" && !found {
 		w.close()
-		return nil, fmt.Errorf("no site is named %q", siteName)
+		return nil, &matchError{kind: matchNone, text: fmt.Sprintf("no site is named %q", siteName)}
 	}
 
 	sort.SliceStable(w.targets, func(i, j int) bool {
@@ -118,6 +118,20 @@ func (w *world) close() {
 		c.Close()
 	}
 }
+
+// matchError says why a charger argument names no charger to act on.
+type matchError struct {
+	kind int
+	text string
+}
+
+const (
+	matchNone      = iota // no charger matches
+	matchStopped          // the charger is stopped
+	matchAmbiguous        // the same charge point ID is in two sites
+)
+
+func (e *matchError) Error() string { return e.text }
 
 // isPattern reports whether a charger argument is a glob pattern and not a
 // single charge point ID or name.
@@ -150,7 +164,7 @@ func (w *world) match(arg string, keep func(target) bool) ([]target, error) {
 			list = append(list, s)
 		}
 		sort.Strings(list)
-		return nil, fmt.Errorf("charger %q exists in sites %s; choose one with -s, or use its name", arg, strings.Join(list, " and "))
+		return nil, &matchError{kind: matchAmbiguous, text: fmt.Sprintf("charger %q exists in sites %s; choose one with -s, or use its name", arg, strings.Join(list, " and "))}
 	}
 	return out, nil
 }
