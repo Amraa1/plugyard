@@ -2,7 +2,7 @@
 
 A terminal tool that simulates EV chargers, so you can develop and test a CSMS (charging station management system) without hardware. Its command line follows Docker's conventions: a file describes a kind of charger, a YAML file starts many of them together, and `ps` and `exec` operate on the running ones.
 
-> **Status: early implementation.** The V1 design is written down in [docs/SPEC.md](docs/SPEC.md). Chargers can be started one at a time or as a site of many, run transactions driven from a second terminal, and keep their state when stopped. `logs`, faults and requests from the CSMS are not built yet; see [What is not built yet](#what-is-not-built-yet).
+> **Status: early implementation.** The V1 design is written down in [docs/SPEC.md](docs/SPEC.md). Chargers can be started one at a time or as a site of many, run transactions driven from a second terminal, keep their state when stopped, obey the CSMS, and fail on demand. `logs` and smart charging are not built yet; see [What is not built yet](#what-is-not-built-yet).
 
 ## Quick start: twenty chargers
 
@@ -87,6 +87,49 @@ plugyard rm FAST-1            # wipes the charger's saved state
 
 If you edit a site file so that saved state would be lost, for example by removing a charger, `site up` lists what is affected and asks first. `--yes` answers in advance, for scripts.
 
+### Test what goes wrong
+
+Real chargers fail, and a CSMS has to cope. plugyard lets you cause the failures you would otherwise wait months to see in the field, one command each.
+
+**A hardware fault.** The connector reports `Faulted` with the error code, and a transaction running there ends:
+
+```sh
+plugyard exec FAST-1 fault GroundFailure
+plugyard exec FAST-1 fault OverCurrentFailure --info "phase L2" --vendor-code E-42
+plugyard exec FAST-1 clear               # the fault is gone
+plugyard exec FAST-1 fault InternalError -n 0    # the whole charger, not one connector
+```
+
+The codes are the fifteen of OCPP 1.6: `ConnectorLockFailure`, `EVCommunicationError`, `GroundFailure`, `HighTemperature`, `InternalError`, `LocalListConflict`, `OtherError`, `OverCurrentFailure`, `OverVoltage`, `PowerMeterFailure`, `PowerSwitchFailure`, `ReaderFailure`, `ResetFailure`, `UnderVoltage` and `WeakSignal`. `plugyard exec --help` lists them too.
+
+**A lost connection.** The charger keeps charging, queues what it has to say, and sends it in order when it is back:
+
+```sh
+plugyard exec FAST-1 offline             # stays away until...
+plugyard exec FAST-1 online
+plugyard exec 'FAST-*' offline --for 30s # twenty chargers drop out and return
+```
+
+**A reboot, or a power cut:**
+
+```sh
+plugyard exec FAST-1 reboot              # ends the transaction, boots again
+plugyard kill FAST-1                     # no goodbye; PowerLoss on the next start
+```
+
+| What happens in the field | How to cause it | What your CSMS sees |
+|---|---|---|
+| A connector faults mid-charge | `exec ... fault <code>` | `StopTransaction` (reason `Other`), then `StatusNotification` `Faulted` with the code |
+| The charger's network drops | `exec ... offline` | Silence, then `BootNotification` and the queued messages in order |
+| Your CSMS restarts | Restart your CSMS | The charger retries by itself, boots and replays |
+| Your CSMS answers a message with an error | Return a `CallError` | The same message again, up to three times |
+| The charger reboots | `exec ... reboot`, or send `Reset` | `StopTransaction` (reason `Reboot`, `SoftReset` or `HardReset`), then `BootNotification` |
+| The charger loses power | `plugyard kill` | The connection drops; `StopTransaction` (reason `PowerLoss`) after the next start |
+
+### Your CSMS is in charge
+
+The charger answers the requests a CSMS sends, with no action from you: `RemoteStartTransaction`, `RemoteStopTransaction`, `Reset`, `GetConfiguration`, `ChangeConfiguration`, `ChangeAvailability`, `UnlockConnector`, `ClearCache`, `DataTransfer` and `TriggerMessage`. A configuration key your CSMS changes is saved, and stays changed across restarts. What each request does is in [docs/SPEC.md](docs/SPEC.md), section 8.
+
 ### Names
 
 Every charger also gets a name, as Docker containers do: `brisk_volt`, `quiet_ampere`. A name is unique on your machine, so it always means one charger, even when two sites use the same charge point ID. Use it wherever a command takes a charger:
@@ -127,8 +170,8 @@ It runs in the foreground until you press Ctrl+C. Its state is saved too: run th
 ## What is not built yet
 
 - `logs`, `stats` and `inspect`
-- Actions `fault`, `clear`, `offline`, `online` and `reboot`
-- Requests from the CSMS, such as `RemoteStartTransaction` and `SetChargingProfile`; the charger answers them `NotImplemented`
+- Smart charging: `SetChargingProfile` and the requests that go with it are answered `NotImplemented`
+- Firmware updates, local authorization lists and reservations; the charger answers these `NotSupported`
 - `scenario run` and `init`
 - Prebuilt binaries
 

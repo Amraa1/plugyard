@@ -83,8 +83,11 @@ type HeartbeatResponse struct {
 type StatusNotificationRequest struct {
 	ConnectorID int    `json:"connectorId"`
 	ErrorCode   string `json:"errorCode"`
+	Info        string `json:"info,omitempty"`
 	Status      string `json:"status"`
 	Timestamp   *Time  `json:"timestamp,omitempty"`
+	// VendorErrorCode is a vendor's own code for the fault.
+	VendorErrorCode string `json:"vendorErrorCode,omitempty"`
 }
 
 type StatusNotificationResponse struct{}
@@ -182,4 +185,132 @@ type SampledValue struct {
 	Measurand string `json:"measurand,omitempty"`
 	Location  string `json:"location,omitempty"`
 	Unit      string `json:"unit,omitempty"`
+}
+
+// More reasons for stopping a transaction.
+const (
+	ReasonHardReset     = "HardReset"
+	ReasonSoftReset     = "SoftReset"
+	ReasonReboot        = "Reboot"
+	ReasonUnlockCommand = "UnlockCommand"
+)
+
+// ContextTrigger is the reading context of a meter value the CSMS asked for.
+const ContextTrigger = "Trigger"
+
+// ErrorCodes are the fault codes a StatusNotification can carry, besides
+// NoError.
+var ErrorCodes = []string{
+	"ConnectorLockFailure", "EVCommunicationError", "GroundFailure", "HighTemperature",
+	"InternalError", "LocalListConflict", "OtherError", "OverCurrentFailure",
+	"OverVoltage", "PowerMeterFailure", "PowerSwitchFailure", "ReaderFailure",
+	"ResetFailure", "UnderVoltage", "WeakSignal",
+}
+
+// Actions the CSMS starts.
+const (
+	ActionRemoteStartTransaction = "RemoteStartTransaction"
+	ActionRemoteStopTransaction  = "RemoteStopTransaction"
+	ActionReset                  = "Reset"
+	ActionGetConfiguration       = "GetConfiguration"
+	ActionChangeConfiguration    = "ChangeConfiguration"
+	ActionChangeAvailability     = "ChangeAvailability"
+	ActionUnlockConnector        = "UnlockConnector"
+	ActionClearCache             = "ClearCache"
+	ActionDataTransfer           = "DataTransfer"
+	ActionTriggerMessage         = "TriggerMessage"
+)
+
+// UnsupportedActions belong to the feature profiles plugyard does not
+// implement: Firmware Management, Local Auth List Management and
+// Reservation.
+var UnsupportedActions = []string{
+	"GetDiagnostics", "UpdateFirmware",
+	"GetLocalListVersion", "SendLocalList",
+	"ReserveNow", "CancelReservation",
+}
+
+// Answer statuses.
+const (
+	StatusAccepted       = "Accepted"
+	StatusRejected       = "Rejected"
+	StatusScheduled      = "Scheduled"
+	StatusNotSupported   = "NotSupported"
+	StatusNotImplemented = "NotImplemented"
+	StatusRebootRequired = "RebootRequired"
+	StatusUnlocked       = "Unlocked"
+	StatusUnknownVendor  = "UnknownVendorId"
+)
+
+// Reset types and availability types.
+const (
+	ResetHard = "Hard"
+	ResetSoft = "Soft"
+
+	AvailabilityOperative   = "Operative"
+	AvailabilityInoperative = "Inoperative"
+)
+
+// StatusAnswer is the answer to every request that is answered with only a
+// status.
+type StatusAnswer struct {
+	Status string `json:"status"`
+}
+
+type RemoteStartTransactionRequest struct {
+	ConnectorID *int   `json:"connectorId,omitempty"`
+	IDTag       string `json:"idTag"`
+}
+
+type RemoteStopTransactionRequest struct {
+	TransactionID int `json:"transactionId"`
+}
+
+type ResetRequest struct {
+	Type string `json:"type"`
+}
+
+type GetConfigurationRequest struct {
+	Key []string `json:"key,omitempty"`
+}
+
+type KeyValue struct {
+	Key      string `json:"key"`
+	Readonly bool   `json:"readonly"`
+	Value    string `json:"value"`
+}
+
+type GetConfigurationResponse struct {
+	ConfigurationKey []KeyValue `json:"configurationKey,omitempty"`
+	UnknownKey       []string   `json:"unknownKey,omitempty"`
+}
+
+type ChangeConfigurationRequest struct {
+	Key   string `json:"key"`
+	Value string `json:"value"`
+}
+
+type ChangeAvailabilityRequest struct {
+	ConnectorID int    `json:"connectorId"`
+	Type        string `json:"type"`
+}
+
+type UnlockConnectorRequest struct {
+	ConnectorID int `json:"connectorId"`
+}
+
+type DataTransferRequest struct {
+	VendorID  string `json:"vendorId"`
+	MessageID string `json:"messageId,omitempty"`
+	Data      string `json:"data,omitempty"`
+}
+
+type DataTransferResponse struct {
+	Status string `json:"status"`
+	Data   string `json:"data,omitempty"`
+}
+
+type TriggerMessageRequest struct {
+	RequestedMessage string `json:"requestedMessage"`
+	ConnectorID      *int   `json:"connectorId,omitempty"`
 }

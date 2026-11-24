@@ -10,5 +10,6 @@ connectors:
 config:
   HeartbeatInterval: 300
   MeterValueSampleInterval: 60
+# dataTransfer: [com.acme]    # vendor IDs whose DataTransfer requests are accepted
 onEvFull: stop     # stop | suspend
 startOn: tap       # tap | plug

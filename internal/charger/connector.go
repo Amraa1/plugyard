@@ -20,8 +20,16 @@ type connector struct {
 	id       int
 	maxPower float64 // W
 
-	// status is the status last reported to the CSMS.
+	// status and code are the status and error code last reported to the
+	// CSMS.
 	status string
+	code   string
+	// fault is the fault the connector has, or nil.
+	fault *Fault
+	// inoperative says the CSMS has made the connector unavailable. scheduled
+	// says it is to become so when its transaction ends.
+	inoperative bool
+	scheduled   bool
 	// meterWh is the meter register. It only counts up and is not reset
 	// between transactions.
 	meterWh float64
@@ -80,9 +88,11 @@ type ConnectorSnapshot struct {
 	Status string `json:"status"`
 	// TransactionID is zero when there is no transaction, or when the CSMS
 	// has not confirmed it yet.
-	TransactionID int     `json:"transactionId,omitempty"`
-	PowerW        float64 `json:"powerW"`
-	MeterWh       float64 `json:"meterWh"`
+	TransactionID int `json:"transactionId,omitempty"`
+	// ErrorCode is the fault the connector reports, or empty.
+	ErrorCode string  `json:"errorCode,omitempty"`
+	PowerW    float64 `json:"powerW"`
+	MeterWh   float64 `json:"meterWh"`
 	// SoC is the EV's state of charge from 0 to 1, or nil with no EV.
 	SoC *float64 `json:"soc,omitempty"`
 }
@@ -94,6 +104,15 @@ func (c *Charger) Snapshot() Snapshot {
 
 	s := Snapshot{ChargePointID: c.cfg.ID, Connection: c.connection}
 	now := time.Now()
+	// The charger as a whole is listed, as connector 0, only when something
+	// is the matter with it.
+	if c.zero.status != v16.StatusAvailable {
+		zero := ConnectorSnapshot{Status: c.zero.status}
+		if c.zero.fault != nil {
+			zero.ErrorCode = c.zero.fault.Code
+		}
+		s.Connectors = append(s.Connectors, zero)
+	}
 	for _, k := range c.connectors {
 		// Bring the reading up to this moment, not the last tick.
 		c.advance(k, now)
@@ -102,6 +121,9 @@ func (c *Charger) Snapshot() Snapshot {
 			Status:  k.status,
 			PowerW:  math.Round(k.powerW),
 			MeterWh: math.Floor(k.meterWh),
+		}
+		if k.fault != nil {
+			ks.ErrorCode = k.fault.Code
 		}
 		if k.tx != nil {
 			ks.TransactionID = k.tx.id
@@ -127,10 +149,14 @@ func (c *Charger) connector(id int) (*connector, error) {
 // currentStatus works out the OCPP status of a connector from its state.
 func (k *connector) currentStatus() string {
 	switch {
+	case k.fault != nil:
+		return v16.StatusFaulted
 	case k.tx != nil && k.tx.evFull:
 		return v16.StatusSuspendedEV
 	case k.tx != nil:
 		return v16.StatusCharging
+	case k.inoperative:
+		return v16.StatusUnavailable
 	case k.ev != nil && k.finishing:
 		return v16.StatusFinishing
 	case k.ev != nil || k.pending != nil:
@@ -143,12 +169,17 @@ func (k *connector) currentStatus() string {
 // reportStatus tells the CSMS when a connector's status has changed. The
 // caller holds c.mu.
 func (c *Charger) reportStatus(k *connector) {
-	status := k.currentStatus()
-	if status == k.status {
+	status, code := k.currentStatus(), k.errorCode()
+	if status == k.status && code == k.code {
 		return
 	}
-	k.status = status
-	c.event("connector %d is %s", k.id, status)
+	k.status, k.code = status, code
+	switch {
+	case k.id == 0:
+		c.event("the charger is %s%s", status, faultSuffix(code))
+	default:
+		c.event("connector %d is %s%s", k.id, status, faultSuffix(code))
+	}
 	// While offline nothing is queued: every connector's status is reported
 	// afresh when the charger is back online.
 	if c.conn != nil {
@@ -160,16 +191,46 @@ func (c *Charger) reportStatus(k *connector) {
 // it is now. The caller holds c.mu.
 func (c *Charger) enqueueStatus(k *connector) {
 	now := v16.Time{Time: time.Now()}
-	c.enqueue(&outMsg{
-		action: v16.ActionStatusNotification,
-		req: &v16.StatusNotificationRequest{
-			ConnectorID: k.id,
-			ErrorCode:   v16.ErrorCodeNoError,
-			Status:      k.status,
-			Timestamp:   &now,
-		},
-		volatile: true,
-	})
+	req := &v16.StatusNotificationRequest{
+		ConnectorID: k.id,
+		ErrorCode:   k.code,
+		Status:      k.status,
+		Timestamp:   &now,
+	}
+	if k.fault != nil {
+		req.Info = k.fault.Info
+		req.VendorErrorCode = k.fault.VendorCode
+	}
+	c.enqueue(&outMsg{action: v16.ActionStatusNotification, req: req, volatile: true})
+}
+
+// errorCode returns the error code the connector reports.
+func (k *connector) errorCode() string {
+	if k.fault != nil {
+		return k.fault.Code
+	}
+	return v16.ErrorCodeNoError
+}
+
+func faultSuffix(code string) string {
+	if code == v16.ErrorCodeNoError {
+		return ""
+	}
+	return " (" + code + ")"
+}
+
+// blocked says why no transaction can start on a connector, or returns "".
+// The caller holds c.mu.
+func (c *Charger) blocked(k *connector) string {
+	switch {
+	case c.zero.fault != nil:
+		return "the charger has a fault (" + c.zero.fault.Code + "); clear it first"
+	case k.fault != nil:
+		return "the connector has a fault (" + k.fault.Code + "); clear it first"
+	case k.inoperative:
+		return "the CSMS has made the connector unavailable"
+	}
+	return ""
 }
 
 // Plug plugs an EV into a connector. It returns a description of what
@@ -209,7 +270,7 @@ func (c *Charger) Plug(ctx context.Context, connectorID int, params ev.Params) (
 		p.timer.Stop()
 		k.pending = nil
 		tx = c.startTx(k, p.tag, p.parent)
-	case c.cfg.Model.StartOn == model.StartOnPlug:
+	case c.cfg.Model.StartOn == model.StartOnPlug && c.blocked(k) == "":
 		tx = c.startTx(k, c.cfg.Model.StartTag, "")
 	}
 	c.reportStatus(k)
@@ -282,6 +343,10 @@ func (c *Charger) Tap(ctx context.Context, connectorID int, tag string) (string,
 		c.reportStatus(k)
 		c.unlock()
 		return outcome, nil
+	case running == nil && c.blocked(k) != "":
+		reason := c.blocked(k)
+		c.mu.Unlock()
+		return "", errors.New(reason)
 	case running == nil && k.finishing:
 		c.mu.Unlock()
 		return "", errors.New("the last transaction has ended; unplug the EV first")
@@ -323,48 +388,83 @@ func (c *Charger) Tap(ctx context.Context, connectorID int, tag string) (string,
 		return fmt.Sprintf("tag rejected by the CSMS (%s)", info.Status), nil
 	}
 
-	if k.ev == nil {
-		timeout := c.configSeconds("ConnectionTimeOut")
-		if timeout <= 0 {
-			timeout = 60 * time.Second
-		}
-		p := &pendingTag{tag: tag, parent: info.ParentIDTag}
-		p.timer = time.AfterFunc(timeout, func() {
-			c.mu.Lock()
-			defer c.mu.Unlock()
-			if k.pending == p {
-				k.pending = nil
-				c.event("connector %d: no EV was plugged in within %s, tag forgotten", k.id, timeout)
-				c.reportStatus(k)
-			}
-		})
-		k.pending = p
-		c.event("connector %d: tag %s accepted, waiting for an EV", k.id, tag)
-		c.reportStatus(k)
-		c.mu.Unlock()
-		return fmt.Sprintf("tag accepted, waiting %s for an EV", timeout), nil
-	}
-
-	tx := c.startTx(k, tag, info.ParentIDTag)
+	outcome, tx := c.admit(k, tag, info.ParentIDTag)
 	c.reportStatus(k)
 	c.unlock()
-	return "tag accepted, " + c.awaitStart(ctx, k, tx), nil
+	if tx != nil {
+		outcome = c.awaitStart(ctx, k, tx)
+	}
+	return "tag accepted, " + outcome, nil
 }
 
-// authorize asks the CSMS whether a tag may charge.
+// admit acts on a tag that may charge on a connector: it starts a
+// transaction if an EV is plugged in, and otherwise has the connector wait
+// for one. The caller holds c.mu and reports the connector's status.
+func (c *Charger) admit(k *connector, tag, parent string) (string, *transaction) {
+	if k.ev != nil {
+		return "", c.startTx(k, tag, parent)
+	}
+
+	timeout := c.configSeconds("ConnectionTimeOut")
+	if timeout <= 0 {
+		timeout = 60 * time.Second
+	}
+	p := &pendingTag{tag: tag, parent: parent}
+	p.timer = time.AfterFunc(timeout, func() {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		if k.pending == p {
+			k.pending = nil
+			c.event("connector %d: no EV was plugged in within %s, tag forgotten", k.id, timeout)
+			c.reportStatus(k)
+		}
+	})
+	k.pending = p
+	c.event("connector %d: tag %s accepted, waiting for an EV", k.id, tag)
+	return fmt.Sprintf("waiting %s for an EV", timeout), nil
+}
+
+// authorize finds out whether a tag may charge: from the CSMS when the
+// charger is online, and otherwise from what the configuration allows a
+// charger to decide by itself.
 func (c *Charger) authorize(ctx context.Context, tag string) (v16.IDTagInfo, error) {
 	c.mu.Lock()
 	conn := c.conn
-	c.mu.Unlock()
 	if conn == nil {
+		defer c.mu.Unlock()
+		if info, ok := c.authCache[tag]; ok && c.configBool("AuthorizationCacheEnabled") && c.configBool("LocalAuthorizeOffline") {
+			expired := info.ExpiryDate != nil && info.ExpiryDate.Before(time.Now())
+			if info.Status == v16.AuthorizationAccepted && !expired {
+				c.event("tag %s accepted from the authorization cache while offline", tag)
+				return info, nil
+			}
+		}
+		if c.configBool("AllowOfflineTxForUnknownId") {
+			c.event("tag %s accepted while offline, as AllowOfflineTxForUnknownId allows", tag)
+			return v16.IDTagInfo{Status: v16.AuthorizationAccepted}, nil
+		}
 		return v16.IDTagInfo{}, errors.New("the charger is offline, so the tag cannot be authorized")
 	}
+	c.mu.Unlock()
 
 	var resp v16.AuthorizeResponse
 	if err := c.call(ctx, conn, v16.ActionAuthorize, v16.AuthorizeRequest{IDTag: tag}, &resp); err != nil {
 		return v16.IDTagInfo{}, fmt.Errorf("the CSMS did not answer Authorize: %w", err)
 	}
+	c.mu.Lock()
+	c.remember(tag, resp.IDTagInfo)
+	c.unlock()
 	return resp.IDTagInfo, nil
+}
+
+// remember keeps what the CSMS said about a tag, if the authorization cache
+// is on. The caller holds c.mu.
+func (c *Charger) remember(tag string, info v16.IDTagInfo) {
+	if tag == "" || info.Status == "" || !c.configBool("AuthorizationCacheEnabled") {
+		return
+	}
+	c.authCache[tag] = info
+	c.dirty = true
 }
 
 // startTx starts a transaction on a connector. The caller holds c.mu.
@@ -434,6 +534,7 @@ func (c *Charger) startAnswered(m *outMsg, result json.RawMessage) {
 		return
 	}
 	tx.id = resp.TransactionID
+	c.remember(tx.idTag, resp.IDTagInfo)
 	if resp.IDTagInfo.ParentIDTag != "" {
 		tx.parentIDTag = resp.IDTagInfo.ParentIDTag
 	}
@@ -477,6 +578,11 @@ func (c *Charger) stopTx(k *connector, reason, tag string) string {
 	k.tx = nil
 	k.powerW = 0
 	k.finishing = k.ev != nil
+	if k.scheduled {
+		// The CSMS made the connector unavailable during the transaction.
+		k.scheduled = false
+		k.inoperative = true
+	}
 
 	m := &outMsg{
 		action: v16.ActionStopTransaction,
@@ -593,23 +699,28 @@ func (c *Charger) tick(now time.Time) {
 		}
 
 		if k.tx == tx && !tx.nextSample.IsZero() && !now.Before(tx.nextSample) {
-			tx.nextSample = now.Add(c.configSeconds("MeterValueSampleInterval"))
-			c.enqueueMeterValues(k, tx, now)
+			tx.nextSample = time.Time{}
+			if interval := c.configSeconds("MeterValueSampleInterval"); interval > 0 {
+				tx.nextSample = now.Add(interval)
+			}
+			c.enqueueMeterValues(k, tx, now, v16.ContextSamplePeriodic)
 		}
 		c.reportStatus(k)
 	}
 }
 
-// enqueueMeterValues queues a periodic MeterValues message. The caller holds
+// enqueueMeterValues queues a MeterValues message. tx is nil when the
+// connector has no transaction. The caller holds
 // c.mu.
-func (c *Charger) enqueueMeterValues(k *connector, tx *transaction, now time.Time) {
-	value := c.sample(k, c.configMeasurands("MeterValuesSampledData"), v16.ContextSamplePeriodic, now)
+func (c *Charger) enqueueMeterValues(k *connector, tx *transaction, now time.Time, readingContext string) {
+	value := c.sample(k, c.configMeasurands("MeterValuesSampledData"), readingContext, now)
 	if value == nil {
 		return
 	}
 	req := &v16.MeterValuesRequest{ConnectorID: k.id, MeterValue: []v16.MeterValue{*value}}
 	m := &outMsg{action: v16.ActionMeterValues, req: req}
 	switch {
+	case tx == nil:
 	case tx.id != 0:
 		id := tx.id
 		req.TransactionID = &id

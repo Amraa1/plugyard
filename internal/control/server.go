@@ -129,6 +129,9 @@ func (srv *Server) handleExec(w http.ResponseWriter, r *http.Request) {
 		go func() {
 			defer wg.Done()
 			result := ExecResult{ChargePointID: id, Connector: req.Connector}
+			if WholeCharger(req.Action) {
+				result.Connector = 0
+			}
 			message, err := srv.exec(r.Context(), id, req)
 			if err != nil {
 				result.Message = err.Error()
@@ -212,6 +215,16 @@ func (srv *Server) runAction(ctx context.Context, c *charger.Charger, req ExecRe
 		return c.Unplug(req.Connector)
 	case ActionTap:
 		return c.Tap(ctx, req.Connector, req.Tag)
+	case ActionFault:
+		return c.Fault(req.Connector, req.Fault)
+	case ActionClear:
+		return c.ClearFault(req.Connector)
+	case ActionOffline:
+		return c.Offline(req.For)
+	case ActionOnline:
+		return c.Online()
+	case ActionReboot:
+		return c.Reboot()
 	default:
 		return "", fmt.Errorf("unknown action %q", req.Action)
 	}

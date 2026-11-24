@@ -5,6 +5,8 @@
 package control
 
 import (
+	"time"
+
 	"github.com/Amraa1/plugyard/internal/charger"
 	"github.com/Amraa1/plugyard/internal/datadir"
 	"github.com/Amraa1/plugyard/internal/ev"
@@ -12,7 +14,7 @@ import (
 
 // ProtocolVersion changes whenever requests or answers change shape. A
 // command only talks to a site that speaks the same version.
-const ProtocolVersion = 3
+const ProtocolVersion = 4
 
 const (
 	socketPrefix = "s-"
@@ -75,16 +77,33 @@ type PowerRequest struct {
 
 // Actions that ExecRequest can carry.
 const (
-	ActionPlug   = "plug"
-	ActionUnplug = "unplug"
-	ActionTap    = "tap"
+	ActionPlug    = "plug"
+	ActionUnplug  = "unplug"
+	ActionTap     = "tap"
+	ActionFault   = "fault"
+	ActionClear   = "clear"
+	ActionOffline = "offline"
+	ActionOnline  = "online"
+	ActionReboot  = "reboot"
 )
+
+// WholeCharger reports whether an action is about a charger as a whole and
+// not one of its connectors.
+func WholeCharger(action string) bool {
+	return action == ActionOffline || action == ActionOnline || action == ActionReboot
+}
 
 // ExecRequest asks a site to run one action on some of its chargers.
 type ExecRequest struct {
 	ChargePointIDs []string `json:"chargePointIds"`
 	Action         string   `json:"action"`
-	Connector      int      `json:"connector"`
+	// Connector is the connector the action is about. For a fault it may be
+	// 0, meaning the charger as a whole.
+	Connector int `json:"connector"`
+	// Fault is the fault a fault action reports.
+	Fault charger.Fault `json:"fault"`
+	// For is how long an offline action lasts; zero means until online.
+	For time.Duration `json:"for,omitempty"`
 	// Tag is the tag presented by a tap.
 	Tag string `json:"tag,omitempty"`
 	// EVPreset names an EV preset of the site to plug in.

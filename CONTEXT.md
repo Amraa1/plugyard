@@ -64,6 +64,10 @@ _Avoid_: Card, RFID, token, badge
 Something done to a running charger from outside, such as plugging in an EV, presenting a tag or raising a fault.
 _Avoid_: Command, operation, event
 
+**Fault**:
+Something wrong with a connector or with the charger as a whole, reported to the CSMS with an OCPP error code until it is cleared.
+_Avoid_: Error (an error is an answer to a message), failure, alarm
+
 **Charge curve**:
 The share of its maximum power that an EV accepts at each state of charge.
 _Avoid_: Power curve, charging profile (an OCPP term for a limit the CSMS sets)

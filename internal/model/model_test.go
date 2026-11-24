@@ -147,3 +147,19 @@ func TestParsePower(t *testing.T) {
 		}
 	}
 }
+
+func TestDataTransferVendors(t *testing.T) {
+	const base = "vendor: Acme\nmodel: Wallbox\nfirmware: \"1.0\"\nconnectors:\n  - { id: 1, type: Type2, maxPower: 7.4kW }\n"
+
+	m, err := Parse([]byte(base + "dataTransfer: [com.acme, \" com.other \"]\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(m.DataTransfer) != 2 || m.DataTransfer[0] != "com.acme" || m.DataTransfer[1] != "com.other" {
+		t.Errorf("DataTransfer = %q", m.DataTransfer)
+	}
+
+	if _, err := Parse([]byte(base + "dataTransfer: [\"\"]\n")); err == nil || !strings.Contains(err.Error(), "dataTransfer[0]: the vendor ID is empty") {
+		t.Errorf("an empty vendor ID returned %v", err)
+	}
+}

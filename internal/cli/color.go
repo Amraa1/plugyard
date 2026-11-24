@@ -78,7 +78,8 @@ func (p palette) status(status string) string {
 		return p.green(status)
 	case v16.StatusPreparing, v16.StatusFinishing, v16.StatusSuspendedEV, v16.StatusSuspendedEVSE:
 		return p.yellow(status)
-	case v16.StatusFaulted:
+	}
+	if strings.HasPrefix(status, v16.StatusFaulted) || status == v16.StatusUnavailable {
 		return p.red(status)
 	}
 	return status
