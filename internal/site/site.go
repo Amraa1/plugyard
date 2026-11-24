@@ -49,6 +49,9 @@ type Config struct {
 	Presets map[string]ev.Overrides
 	// Log, if set, receives the log of every charger.
 	Log func(charger.Entry)
+	// Diagnostics, if set, returns the log of one charger between two
+	// moments, for GetDiagnostics.
+	Diagnostics func(chargePointID string, from, to time.Time) ([]byte, error)
 	// Store, if set, keeps the chargers' state.
 	Store  Store
 	Timing charger.Timing
@@ -125,6 +128,10 @@ func (s *Site) chargerConfig(m Member, saved *charger.State) charger.Config {
 		BeforeDial: s.pacer,
 		Log:        s.cfg.Log,
 		Restore:    saved,
+	}
+	if s.cfg.Diagnostics != nil {
+		id := m.ID
+		cfg.Diagnostics = func(from, to time.Time) ([]byte, error) { return s.cfg.Diagnostics(id, from, to) }
 	}
 	if s.cfg.Store != nil {
 		id := m.ID

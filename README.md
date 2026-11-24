@@ -265,13 +265,13 @@ Profiles are saved with the charger. The rules are in [docs/SPEC.md](docs/SPEC.m
 
 ### Firmware updates and diagnostics
 
-Press "update firmware" in your CSMS and watch the charger go through it. No file server is needed: the charger never fetches or sends a file, it reports what a real charger reports.
+Press "update firmware" in your CSMS and watch the charger go through it. No firmware file is needed: the charger fetches nothing, it reports what a real charger reports. Diagnostics are real: the charger uploads its own log to the place your CSMS names.
 
 | Your CSMS sends | The charger |
 |---|---|
 | `UpdateFirmware` for `ftp://host/fw-2.4.1.bin` | Reports `Downloading`, `Downloaded`, `Installing` and `Installed`, then reboots and sends `BootNotification` with firmware `fw-2.4.1` |
 | `UpdateFirmware` during a transaction | Downloads, then waits for the transaction to end before it installs |
-| `GetDiagnostics` | Answers with a file name, then reports `Uploading` and `Uploaded` |
+| `GetDiagnostics` for `ftp://user:password@host/dir/` | Answers with a file name, reports `Uploading`, uploads its log there under that name, and reports `Uploaded`, or `UploadFailed` if the server cannot be reached or refuses |
 
 To test the unhappy path, tell the charger what goes wrong next:
 
@@ -281,7 +281,10 @@ plugyard exec FAST-1 fail install        # ... or with InstallationFailed
 plugyard exec FAST-1 fail upload         # the next diagnostics upload ends with UploadFailed
 ```
 
-Each step takes 10 seconds, or less with `--speed`. The details are in [docs/SPEC.md](docs/SPEC.md), section 8.
+- Each step of a firmware update takes 10 seconds, or less with `--speed`.
+- The diagnostics file holds what `plugyard logs FAST-1` shows, and `startTime` and `stopTime` choose the lines. It is sent with FTP, or with an HTTP `PUT` for an `http://` or `https://` location.
+
+The details are in [docs/SPEC.md](docs/SPEC.md), section 8.
 
 ### Names
 
@@ -330,7 +333,7 @@ Your CSMS may want them to arrive more gently: `plugyard site up --connect-rate 
 
 - OCPP 2.0.1; only OCPP 1.6J
 - Local authorization lists and reservations; the charger answers these `NotSupported`
-- Real firmware downloads and diagnostics uploads; the charger reports the statuses and moves no file
+- Real firmware downloads; the charger reports the statuses and fetches no file
 - Deliberately broken messages, to test how a CSMS handles protocol violations
 - Client certificates (security profile 3)
 

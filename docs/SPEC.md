@@ -36,7 +36,8 @@ One site must run hundreds to a few thousand chargers comfortably on a developer
 
 - OCPP 2.0.1 (the protocol sits behind a seam so it can be added)
 - Local Auth List and Reservation profiles; the charger answers `NotSupported`
-- Real file transfers: a firmware update and a diagnostics upload report their statuses, and no file is fetched or sent
+- Fetching firmware: a firmware update reports its statuses, and no file is downloaded
+- Diagnostics uploads with SFTP or FTPS; only `http`, `https` and `ftp`
 - Client certificates (security profile 3)
 - ISO 15118 and Plug & Charge
 - EVs as persistent entities
@@ -417,7 +418,7 @@ Each time the limit on a transaction changes, the charger's log says so, for exa
 
 ### Firmware and diagnostics
 
-The charger follows OCPP 1.6 Firmware Management, with one difference from real hardware: it never fetches or sends a file. It reports the statuses a real charger reports, so a CSMS can be tested without a file server. The `location` can be any address.
+The charger follows OCPP 1.6 Firmware Management. A firmware update is acted out: the charger reports the statuses a real charger reports and fetches no file, so its `location` can be any address. A diagnostics upload is real: the charger sends its log to the `location`.
 
 **`UpdateFirmware`.** The charger answers, waits for the `retrieveDate`, and then reports with `FirmwareStatusNotification`:
 
@@ -435,7 +436,19 @@ The charger follows OCPP 1.6 Firmware Management, with one difference from real 
 - A new `UpdateFirmware` replaces one that is waiting or downloading. During an installation it is ignored.
 - An update does not survive `stop` or `kill`: the charger comes back with the firmware it had.
 
-**`GetDiagnostics`.** The charger answers with a file name, `diagnostics-<charge point ID>-<time>.log`, and reports `Uploading`, then `Uploaded` 5 seconds later (shortened by `--speed`), with `DiagnosticsStatusNotification`. `startTime` and `stopTime` are accepted and ignored.
+**`GetDiagnostics`.** The charger answers with a file name, `diagnostics-<charge point ID>-<time>.log`, reports `Uploading`, uploads the file to the `location`, and reports `Uploaded` as soon as the server has taken it, all with `DiagnosticsStatusNotification`.
+
+- The file is the charger's own log: the lines `plugyard logs <charger>` shows, events and OCPP messages, as far back as the site's log files go. `startTime` and `stopTime` choose the lines; without them the file holds everything.
+- The `location` is a directory, and the file is put into it under the name the charger answered with:
+
+  | Location | How the file is sent |
+  |---|---|
+  | `http://`, `https://` | `PUT <location>/<file name>`. Any `2xx` answer counts as taken |
+  | `ftp://` | Passive mode: log in, change to the directory, `STOR <file name>` |
+
+- A user name and a password in the location (`ftp://user:password@host/dir/`) are used to log in: as HTTP Basic authentication, or as the FTP login. Without them FTP logs in as `anonymous`. The password is left out of the charger's events; it does show in the logged OCPP message that carried it.
+- When the upload cannot be made, the charger reports `UploadFailed`, and its log says why: the server cannot be reached, it refused the login or the file, or the location uses something other than `http`, `https` or `ftp`. One attempt may take 60 seconds.
+- A charger started with `run --rm`, which keeps no log, and a period with no lines, give a file of one line that says so.
 
 **Failures.** `exec <charger> fail <step>` makes the next step of that kind fail:
 
@@ -443,7 +456,7 @@ The charger follows OCPP 1.6 Firmware Management, with one difference from real 
 |---|---|---|
 | `download` | `DownloadFailed` in place of `Downloaded` | Keeps its firmware, does not reboot |
 | `install` | `InstallationFailed` in place of `Installed` | Keeps its firmware, does not reboot, connectors are available again |
-| `upload` | `UploadFailed` in place of `Uploaded` | |
+| `upload` | `UploadFailed` in place of `Uploaded` | Nothing is sent to the `location` |
 
 - A failing download or upload is tried again as often as the `retries` of the request say, `retryInterval` seconds apart, and the failure is reported once, after the last attempt. With no `retries` it is tried once. The log shows every attempt.
 - `fail` stays set until that step has failed, or the charger is powered off. It then is spent: the next update goes through.
