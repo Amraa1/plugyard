@@ -38,7 +38,35 @@ jobs:
         run: go test ./...
 
       - name: Build
-        run: go build ./cmd/plugyard
+        run: go build .
 
       - name: Run plugyard version
         run: ./plugyard version
+
+  release-build:
+    name: Release build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      # Builds the six release archives without publishing them, so that a
+      # change that breaks the release is caught before a tag is pushed.
+      - uses: goreleaser/goreleaser-action@v6
+        with:
+          version: "~> v2"
+          args: release --snapshot --clean
+
+      - name: Check the archives the install scripts and "plugyard update" expect
+        run: |
+          for name in plugyard_linux_amd64.tar.gz plugyard_linux_arm64.tar.gz                       plugyard_darwin_amd64.tar.gz plugyard_darwin_arm64.tar.gz                       plugyard_windows_amd64.zip plugyard_windows_arm64.zip checksums.txt; do
+            test -f "dist/$name" || { echo "dist/$name is missing"; ls dist; exit 1; }
+          done
+
+      - name: Check install.sh
+        run: sh -n install.sh

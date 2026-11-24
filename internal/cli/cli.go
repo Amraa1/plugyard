@@ -47,6 +47,8 @@ func RunContext(ctx context.Context, args []string, stdout, stderr io.Writer) in
 	// arguments. An error before that point is a usage error.
 	started := false
 
+	cleanAfterUpdate()
+
 	root := newRoot()
 	root.SetArgs(args)
 	root.SetOut(stdout)
@@ -101,7 +103,7 @@ func newRoot() *cobra.Command {
 	}
 	root.CompletionOptions.DisableDefaultCmd = true
 
-	root.AddCommand(newExec(), newInfo(), newInit(), newInspect(), newLogs(), newPs(), newRun(), newScenario(), newSchema(), newSite(), newStats(), newVersion())
+	root.AddCommand(newExec(), newInfo(), newInit(), newInspect(), newLogs(), newPs(), newRun(), newScenario(), newSchema(), newSite(), newStats(), newUpdate(), newVersion())
 	root.AddCommand(newPowerCommands()...)
 	return root
 }
