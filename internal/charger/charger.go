@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"math/rand/v2"
+	"net/netip"
 	"net/url"
 	"slices"
 	"strconv"
@@ -74,6 +75,9 @@ type Config struct {
 	// Diagnostics, if set, returns the charger's log between two moments, as
 	// the file GetDiagnostics asks for. A zero time leaves that end open.
 	Diagnostics func(from, to time.Time) ([]byte, error)
+	// AllowUploads lists the hosts diagnostics may be uploaded to besides
+	// the machine the CSMS is on.
+	AllowUploads []string
 	// Save, if set, is given the charger's state whenever something worth
 	// keeping has changed: at once for transactions and queued messages, and
 	// every MeterSaveInterval seconds for meter readings.
@@ -170,6 +174,7 @@ type Charger struct {
 	mu         sync.Mutex
 	connection string      // Connecting, Online or Offline
 	conn       *ocppj.Conn // set while the CSMS has accepted the charger
+	csmsAddr   netip.Addr  // where the CSMS was last connected to
 	connectors []*connector
 	// zero stands for the charger as a whole, which OCPP addresses as
 	// connector 0. It is reported only when it is not Available.
@@ -488,6 +493,11 @@ func (c *Charger) session(ctx context.Context) (connected bool, err error) {
 	if err != nil {
 		return false, err
 	}
+
+	// Where the CSMS is decides where diagnostics may be uploaded to.
+	c.mu.Lock()
+	c.csmsAddr = conn.RemoteAddr()
+	c.mu.Unlock()
 
 	c.event("connected to %s", c.url)
 	if conn.Subprotocol() != v16.Subprotocol {

@@ -139,7 +139,7 @@ The command line thus has three suites, `site`, `charger` and `api`, of which `a
 - `stop` on a charger that is already stopped succeeds. `kill` on one fails.
 - `rm` does not ask for confirmation. Removing the last charger of a site removes the site.
 
-`run` stays in the foreground printing the charger's log until interrupted, then shuts the charger down in an orderly way. With `-d, --detach` it starts the charger in the background as `site up -d` does, prints how to follow its log and how to stop it, and returns; `plugyard stop <ID>` shuts it down. `--detach` and `--rm` cannot be used together, since a charger in the background runs from its saved state. Its state is saved like that of any other charger: running the same charge point ID again brings the same charger back, and `plugyard rm <ID>` wipes it. `--name <name>` gives the charger its name. `--rm` saves nothing, for a throwaway charger. `-y` answers the question `site up` asks when the Chargerfile no longer fits the saved state. It also accepts `--speed N`, with the same meaning as on `site up`, `--password <password>` for HTTP Basic Auth, which falls back to the `PLUGYARD_CSMS_PASSWORD` environment variable so the password can stay off the command line, and `--insecure-skip-verify`.
+`run` stays in the foreground printing the charger's log until interrupted, then shuts the charger down in an orderly way. With `-d, --detach` it starts the charger in the background as `site up -d` does, prints how to follow its log and how to stop it, and returns; `plugyard stop <ID>` shuts it down. `--detach` and `--rm` cannot be used together, since a charger in the background runs from its saved state. Its state is saved like that of any other charger: running the same charge point ID again brings the same charger back, and `plugyard rm <ID>` wipes it. `--name <name>` gives the charger its name. `--rm` saves nothing, for a throwaway charger. `-y` answers the question `site up` asks when the Chargerfile no longer fits the saved state. It also accepts `--speed N`, with the same meaning as on `site up`, `--password <password>` for HTTP Basic Auth, which falls back to the `PLUGYARD_CSMS_PASSWORD` environment variable so the password can stay off the command line, `--insecure-skip-verify`, and `--allow-upload <host>`, which may be repeated and means what `uploads.allow` means in a site file.
 
 ### Actions
 
@@ -259,6 +259,7 @@ csms:
 speed: 1
 connectRate: 0                         # new connections per second; 0 = no limit
 log: { maxSize: 10MB, files: 3 }       # the cap of the site's log; these are the defaults
+uploads: { allow: [files.example.com] } # where else diagnostics may be uploaded to (section 8)
 evs:
   compact:   { battery: 40kWh, maxPower: 50kW }
   longrange: { battery: 82kWh, maxPower: 230kW, soc: 10%, targetSoc: 80%, curve: dc-fast }
@@ -281,6 +282,7 @@ chargers:
 - Entry names (`fast`, `lobby`) are used only inside the file. Everywhere else a charger is known by its charge point ID or its name.
 - `name` gives a charger its name, and is allowed only on an entry that creates one charger. Every other charger gets a made-up name of the form `adjective_noun`, such as `brisk_volt`, when it is first created. A name is letters, digits, `_`, `.` and `-`. It stays with the charger until `rm` or `--reset`, and a name already in use on the machine is refused.
 - A Chargerfile path is relative to the site file.
+- `uploads.allow` lists hosts, by name or address, that diagnostics may be uploaded to besides the machine the CSMS is on (section 8). An entry is a host alone: no scheme, port or path.
 - `log` caps the site's log (section 11): at most `files` files of `maxSize` each. `maxSize` takes `kB`, `MB` or `GB` and is at least `1kB`; `files` is from 1 to 100.
 - Unknown settings are errors, and `site validate` reports every problem at once.
 
@@ -485,7 +487,23 @@ The charger follows OCPP 1.6 Firmware Management. A firmware update is acted out
   | `ftp://` | Passive mode: log in, change to the directory, `STOR <file name>` |
 
 - A user name and a password in the location (`ftp://user:password@host/dir/`) are used to log in: as HTTP Basic authentication, or as the FTP login. Without them FTP logs in as `anonymous`. The password is left out of the charger's events; it does show in the logged OCPP message that carried it.
-- When the upload cannot be made, the charger reports `UploadFailed`, and its log says why: the server cannot be reached, it refused the login or the file, or the location uses something other than `http`, `https` or `ftp`. One attempt may take 60 seconds.
+- When the upload cannot be made, the charger reports `UploadFailed`, and its log says why: the server cannot be reached, it refused the login or the file, the location uses something other than `http`, `https` or `ftp`, or the location is a machine the charger may not upload to. One attempt may take 60 seconds.
+
+**Where a charger may upload to.** The CSMS chooses the `location`. Without a limit, a CSMS that is hostile or has been broken into could make the machine plugyard runs on connect to any address that machine can reach, such as the internal services of a network.
+
+| Location | Allowed |
+|---|---|
+| The machine the CSMS is on | Always. This gives the CSMS no reach it did not have |
+| A host listed in `uploads.allow` of the site file, or given with `--allow-upload` to `run` | Yes |
+| A link-local address (`169.254.0.0/16`, `fe80::/10`), where the metadata of cloud machines is served, and `fd00:ec2::/32` | Never, whatever is listed |
+| Anything else | No |
+
+- "The machine the CSMS is on" is the address the charger's connection to the CSMS goes to. When the CSMS is on a loopback address, every loopback address counts: `localhost`, `127.0.0.1` and `::1`. So a CSMS and a file server on the developer's own machine need no setting.
+- The check is made on the address that is connected to, after the host name has been looked up, and on every connection of the upload: the one an HTTP redirect leads to, and the second connection an FTP server asks for. A name that points somewhere else at the moment of the upload does not get around it.
+- A host allowed by name is allowed under that name only, and an address under that address only.
+- A refused upload connects to nothing. The charger's log names the host and the line that would allow it.
+- Uploads do not go through an HTTP proxy set in the environment, since the check has to see where the upload really goes.
+- When the charger reaches its CSMS through a proxy, the proxy's machine is the one that counts.
 - A charger started with `run --rm`, which keeps no log, and a period with no lines, give a file of one line that says so.
 
 **Failures.** `exec <charger> fail <step>` makes the next step of that kind fail:

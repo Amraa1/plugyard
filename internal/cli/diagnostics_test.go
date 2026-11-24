@@ -12,6 +12,7 @@ import (
 
 	"github.com/Amraa1/plugyard/internal/csmstest"
 	"github.com/Amraa1/plugyard/internal/ocpp/v16"
+	"github.com/Amraa1/plugyard/internal/store"
 )
 
 func TestDiagnosticsUploadTheLogOfTheCharger(t *testing.T) {
@@ -74,5 +75,42 @@ func TestDiagnosticsUploadTheLogOfTheCharger(t *testing.T) {
 	early := get(v16.GetDiagnosticsRequest{StopTime: &v16.Time{Time: time.Now().Add(-time.Hour)}})
 	if strings.Contains(early, "powered on") {
 		t.Errorf("diagnostics until an hour ago:\n%s", early)
+	}
+}
+
+func TestAllowUpload(t *testing.T) {
+	dir := useTempDataDir(t)
+	csms := csmstest.Start(t)
+	path := writeChargerfile(t, testChargerfile)
+
+	// A host is a name or an address, with nothing around it.
+	code, _, stderr := run("run", path, "--csms", csms.URL(), "--id", "CP-1", "--allow-upload", "ftp://files.example.com/")
+	if code != ExitUsage || !strings.Contains(stderr, `--allow-upload: "ftp://files.example.com/" is not a host`) {
+		t.Errorf("run with a location as --allow-upload: exit %d, stderr %q", code, stderr)
+	}
+
+	// The hosts are saved with the charger, so that "plugyard start" and a
+	// charger in the background keep them.
+	startRun(t, csms, "CP-1", "--allow-upload", "files.example.com", "--allow-upload", "10.0.0.5")
+	saved, err := store.All(dir)
+	if err != nil || len(saved) != 1 {
+		t.Fatalf("saved sites: %v, %v", saved, err)
+	}
+	if got := strings.Join(saved[0].Meta.AllowUploads, " "); got != "files.example.com 10.0.0.5" {
+		t.Errorf("the saved charger allows uploads to %q", got)
+	}
+
+	// A site file says the same with uploads.allow.
+	site := writeSite(t, csms.URL(), "name: yard\nuploads: { allow: [files.example.com] }\nchargers:\n  fast: { model: ./Chargerfile, id: FAST-1 }\n")
+	startSiteUp(t, csms, site, []string{"FAST-1"})
+	saved, _ = store.All(dir)
+	found := false
+	for _, s := range saved {
+		if !s.Meta.Implicit {
+			found = strings.Join(s.Meta.AllowUploads, " ") == "files.example.com"
+		}
+	}
+	if !found {
+		t.Errorf("the saved site does not allow uploads to files.example.com: %+v", saved)
 	}
 }

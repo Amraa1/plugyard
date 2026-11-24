@@ -9,7 +9,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
+	"net/netip"
 	"sync"
 	"time"
 
@@ -61,6 +63,9 @@ type Conn struct {
 	ws          *websocket.Conn
 	opts        Options
 	subprotocol string
+	// remote is the address a dialed connection goes to, or the zero
+	// value when it is not known.
+	remote netip.Addr
 
 	callMu sync.Mutex // OCPP allows one outstanding call per direction
 
@@ -82,6 +87,22 @@ func Dial(ctx context.Context, url string, opts DialOptions) (*Conn, error) {
 	}
 
 	transport := http.DefaultTransport.(*http.Transport).Clone()
+	// Note where the connection goes: the address of the CSMS, or of the
+	// proxy when one is set.
+	var mu sync.Mutex
+	var remote netip.Addr
+	dial := transport.DialContext
+	transport.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+		conn, err := dial(ctx, network, addr)
+		if err == nil {
+			if tcp, ok := conn.RemoteAddr().(*net.TCPAddr); ok {
+				mu.Lock()
+				remote = tcp.AddrPort().Addr().Unmap()
+				mu.Unlock()
+			}
+		}
+		return conn, err
+	}
 	if opts.InsecureSkipVerify {
 		transport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
 	}
@@ -101,8 +122,16 @@ func Dial(ctx context.Context, url string, opts DialOptions) (*Conn, error) {
 		}
 		return nil, err
 	}
-	return NewConn(ws, opts.Options), nil
+	conn := NewConn(ws, opts.Options)
+	mu.Lock()
+	conn.remote = remote
+	mu.Unlock()
+	return conn, nil
 }
+
+// RemoteAddr returns the address a dialed connection goes to. It is the
+// zero value for a connection that was accepted, or when it is not known.
+func (c *Conn) RemoteAddr() netip.Addr { return c.remote }
 
 // NewConn wraps an established WebSocket connection and starts reading from
 // it.

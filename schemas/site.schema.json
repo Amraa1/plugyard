@@ -52,6 +52,18 @@
         "files": { "description": "How many log files are kept, from 1 to 100.", "type": ["integer", "string"] }
       }
     },
+    "uploads": {
+      "description": "Where chargers may upload diagnostics when the CSMS asks for them. They may always upload to the machine the CSMS is on.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "allow": {
+          "description": "Further hosts, by name or address, such as files.example.com. No scheme, port or path.",
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
     "evs": {
       "description": "EV presets, used with \"plugyard exec <charger> plug --ev <name>\".",
       "type": "object",

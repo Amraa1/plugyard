@@ -4,6 +4,7 @@ package upload
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -28,17 +29,20 @@ func Redact(location string) string {
 
 // Send uploads data as a file called name to the directory at location:
 // with PUT for http and https, and with STOR for ftp. A user name and a
-// password in the location are used to log in.
-func Send(ctx context.Context, location, name string, data []byte) error {
+// password in the location are used to log in. The policy says which
+// machines may be connected to; an upload it stops fails with a
+// *RefusedError.
+func Send(ctx context.Context, policy Policy, location, name string, data []byte) error {
+	g := newGuard(policy)
 	u, err := url.Parse(location)
 	if err != nil {
 		return fmt.Errorf("the location is not a valid address: %w", err)
 	}
 	switch strings.ToLower(u.Scheme) {
 	case "http", "https":
-		return put(ctx, u, name, data)
+		return put(ctx, g, u, name, data)
 	case "ftp":
-		return stor(ctx, u, name, data)
+		return stor(ctx, g, u, name, data)
 	case "":
 		return fmt.Errorf("the location %q has no scheme: want one of %s", Redact(location), strings.Join(Schemes, ", "))
 	default:
@@ -46,15 +50,24 @@ func Send(ctx context.Context, location, name string, data []byte) error {
 	}
 }
 
-func put(ctx context.Context, dir *url.URL, name string, data []byte) error {
+func put(ctx context.Context, g *guard, dir *url.URL, name string, data []byte) error {
 	target := dir.JoinPath(name)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPut, target.String(), bytes.NewReader(data))
 	if err != nil {
 		return err
 	}
 	req.Header.Set("Content-Type", "text/plain; charset=utf-8")
-	resp, err := http.DefaultClient.Do(req)
+	// Every connection goes through the guard, also the one a redirect
+	// leads to. No proxy is used: the guard has to see where the upload
+	// really goes.
+	transport := &http.Transport{DialContext: g.dial, DisableKeepAlives: true}
+	defer transport.CloseIdleConnections()
+	resp, err := (&http.Client{Transport: transport}).Do(req)
 	if err != nil {
+		var refused *RefusedError
+		if errors.As(err, &refused) {
+			return refused
+		}
 		return err
 	}
 	defer resp.Body.Close()
@@ -64,17 +77,25 @@ func put(ctx context.Context, dir *url.URL, name string, data []byte) error {
 	return nil
 }
 
-func stor(ctx context.Context, dir *url.URL, name string, data []byte) error {
+func stor(ctx context.Context, g *guard, dir *url.URL, name string, data []byte) error {
 	host := dir.Host
 	if dir.Port() == "" {
 		host = net.JoinHostPort(dir.Hostname(), "21")
 	}
-	options := []ftp.DialOption{ftp.DialWithContext(ctx)}
+	// The guard makes the connection for the commands and the one for
+	// the file, which the server may ask to have made to another address.
+	options := []ftp.DialOption{ftp.DialWithContext(ctx), ftp.DialWithDialFunc(func(network, address string) (net.Conn, error) {
+		return g.dial(ctx, network, address)
+	})}
 	if deadline, ok := ctx.Deadline(); ok {
 		options = append(options, ftp.DialWithTimeout(time.Until(deadline)))
 	}
 	conn, err := ftp.Dial(host, options...)
 	if err != nil {
+		var refused *RefusedError
+		if errors.As(err, &refused) {
+			return refused
+		}
 		return fmt.Errorf("cannot reach the FTP server at %s: %w", host, err)
 	}
 	defer conn.Quit()
@@ -93,6 +114,10 @@ func stor(ctx context.Context, dir *url.URL, name string, data []byte) error {
 		}
 	}
 	if err := conn.Stor(name, bytes.NewReader(data)); err != nil {
+		var refused *RefusedError
+		if errors.As(err, &refused) {
+			return refused
+		}
 		return fmt.Errorf("the FTP server refused the file: %w", err)
 	}
 	return nil

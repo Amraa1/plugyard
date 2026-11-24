@@ -306,6 +306,13 @@ func TestDiagnostics(t *testing.T) {
 	}
 	mu.Unlock()
 
+	// A machine other than the CSMS's is refused without being connected
+	// to, and the log says how to allow it.
+	get(v16.GetDiagnosticsRequest{Location: "http://192.0.2.9/diagnostics/"})
+	r.log.waitFor(t, charger.Event, `diagnostics: the upload failed: uploads to 192.0.2.9 are not allowed: it is not the machine the CSMS is on. To allow it, add "uploads: { allow: [192.0.2.9] }" to the site file`)
+	get(v16.GetDiagnosticsRequest{Location: "http://169.254.169.254/latest/meta-data/"})
+	r.log.waitFor(t, charger.Event, "diagnostics: the upload failed: uploads to 169.254.169.254 are never allowed")
+
 	// With no log to send, the file says so.
 	bare := csmstest.Start(t)
 	online(t, bare, charger.Config{})

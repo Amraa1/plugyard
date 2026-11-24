@@ -439,8 +439,9 @@ func serveSaved(ctx context.Context, dir string, st *store.Store, out io.Writer,
 				sink(e)
 			}
 		},
-		Diagnostics: diagnostics,
-		Store:       st,
+		Diagnostics:  diagnostics,
+		AllowUploads: saved.Meta.AllowUploads,
+		Store:        st,
 	}, members)
 	if err != nil {
 		return err
