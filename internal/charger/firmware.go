@@ -320,7 +320,12 @@ func (c *Charger) upload(ctx context.Context, t *transfer) {
 	data, err := c.diagnosticsFile(t)
 	if err == nil {
 		c.mu.Lock()
-		policy := upload.Policy{CSMS: c.csmsAddr, Allow: c.cfg.AllowUploads}
+		policy := upload.Policy{
+			CSMS:               c.csmsAddr,
+			Allow:              c.cfg.AllowUploads,
+			InsecureSkipVerify: c.cfg.UploadsInsecureSkipVerify,
+			Notice:             func(text string) { c.event("diagnostics: %s", text) },
+		}
 		c.mu.Unlock()
 		var cancel func()
 		ctx, cancel = context.WithTimeout(ctx, c.cfg.Timing.UploadTimeout)

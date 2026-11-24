@@ -91,23 +91,23 @@ func TestAllowUpload(t *testing.T) {
 
 	// The hosts are saved with the charger, so that "plugyard start" and a
 	// charger in the background keep them.
-	startRun(t, csms, "CP-1", "--allow-upload", "files.example.com", "--allow-upload", "10.0.0.5")
+	startRun(t, csms, "CP-1", "--allow-upload", "files.example.com", "--allow-upload", "10.0.0.5", "--upload-insecure-skip-verify")
 	saved, err := store.All(dir)
 	if err != nil || len(saved) != 1 {
 		t.Fatalf("saved sites: %v, %v", saved, err)
 	}
-	if got := strings.Join(saved[0].Meta.AllowUploads, " "); got != "files.example.com 10.0.0.5" {
-		t.Errorf("the saved charger allows uploads to %q", got)
+	if got := strings.Join(saved[0].Meta.AllowUploads, " "); got != "files.example.com 10.0.0.5" || !saved[0].Meta.UploadsInsecureSkipVerify {
+		t.Errorf("the saved charger allows uploads to %q, certificates unchecked: %v", got, saved[0].Meta.UploadsInsecureSkipVerify)
 	}
 
 	// A site file says the same with uploads.allow.
-	site := writeSite(t, csms.URL(), "name: yard\nuploads: { allow: [files.example.com] }\nchargers:\n  fast: { model: ./Chargerfile, id: FAST-1 }\n")
+	site := writeSite(t, csms.URL(), "name: yard\nuploads: { allow: [files.example.com], insecureSkipVerify: true }\nchargers:\n  fast: { model: ./Chargerfile, id: FAST-1 }\n")
 	startSiteUp(t, csms, site, []string{"FAST-1"})
 	saved, _ = store.All(dir)
 	found := false
 	for _, s := range saved {
 		if !s.Meta.Implicit {
-			found = strings.Join(s.Meta.AllowUploads, " ") == "files.example.com"
+			found = strings.Join(s.Meta.AllowUploads, " ") == "files.example.com" && s.Meta.UploadsInsecureSkipVerify
 		}
 	}
 	if !found {

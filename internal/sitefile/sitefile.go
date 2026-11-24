@@ -43,6 +43,9 @@ type Site struct {
 	// AllowUploads lists the hosts diagnostics may be uploaded to besides
 	// the machine the CSMS is on.
 	AllowUploads []string
+	// UploadsInsecureSkipVerify turns off the check of the certificate of
+	// an https or ftps server diagnostics are uploaded to.
+	UploadsInsecureSkipVerify bool
 	// EVs holds the EV presets by name.
 	EVs map[string]ev.Overrides
 	// Entries are the charger entries, in the order the file lists them.
@@ -94,7 +97,8 @@ type file struct {
 }
 
 type fileUploads struct {
-	Allow []string `yaml:"allow"`
+	Allow              []string `yaml:"allow"`
+	InsecureSkipVerify *bool    `yaml:"insecureSkipVerify"`
 }
 
 // CheckUploadHost reports what is wrong with a host that diagnostics are to
@@ -256,6 +260,7 @@ func Parse(data []byte, baseDir string, lookupEnv func(string) (string, bool)) (
 			}
 		}
 		site.AllowUploads = f.Uploads.Allow
+		site.UploadsInsecureSkipVerify = f.Uploads.InsecureSkipVerify != nil && *f.Uploads.InsecureSkipVerify
 	}
 
 	if f.Log != nil {

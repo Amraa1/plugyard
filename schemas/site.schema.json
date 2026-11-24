@@ -61,7 +61,8 @@
           "description": "Further hosts, by name or address, such as files.example.com. No scheme, port or path.",
           "type": "array",
           "items": { "type": "string", "minLength": 1 }
-        }
+        },
+        "insecureSkipVerify": { "description": "Do not verify the TLS certificate of a server diagnostics are uploaded to with https or ftps. For servers with a self-signed certificate.", "type": ["boolean", "string"] }
       }
     },
     "evs": {

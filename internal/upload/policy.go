@@ -22,6 +22,18 @@ type Policy struct {
 	// Allow lists further hosts, by name or by address, as they are
 	// written in a location.
 	Allow []string
+	// InsecureSkipVerify turns off the check of the certificate an https
+	// or ftps server shows, for servers with a self-signed one.
+	InsecureSkipVerify bool
+	// Notice, if set, is told what is worth a line in the charger's log
+	// about an upload that goes ahead.
+	Notice func(text string)
+}
+
+func (p Policy) notice(format string, args ...any) {
+	if p.Notice != nil {
+		p.Notice(fmt.Sprintf(format, args...))
+	}
 }
 
 // awsMetadataV6 is where AWS serves instance metadata over IPv6. It is not
