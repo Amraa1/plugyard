@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bufio"
 	"errors"
 	"fmt"
 	"net/http"
@@ -42,7 +43,10 @@ func cleanAfterUpdate() {
 }
 
 func newUpdate() *cobra.Command {
-	var check bool
+	var (
+		check bool
+		yes   bool
+	)
 
 	cmd := &cobra.Command{
 		Use:   "update",
@@ -50,8 +54,11 @@ func newUpdate() *cobra.Command {
 		Long: "Download the latest release of plugyard for this system, check it against\n" +
 			"the release's checksums, and put it in place of the program that is\n" +
 			"running. Saved state and logs are kept.\n\n" +
-			"Running sites must be stopped first: a site started by one version cannot\n" +
-			"be controlled by another. --check only says whether a newer release exists.",
+			"A site started by one version cannot be controlled by another, so sites\n" +
+			"and the API that are running are stopped for the update and started again\n" +
+			"on the new version, in the background. plugyard says which and asks\n" +
+			"first; --yes answers in advance. Transactions that are running end with\n" +
+			"StopTransaction. --check only says whether a newer release exists.",
 		Example: "  plugyard update --check\n" +
 			"  plugyard update",
 		Args: cobra.NoArgs,
@@ -85,28 +92,29 @@ func newUpdate() *cobra.Command {
 				return nil
 			}
 
-			// A site keeps running the old program, and the new one may not
-			// be able to talk to it.
-			w, err := loadWorld(ctx, "")
+			// A site, and the API, keep running the old program, and the
+			// new one may not be able to talk to them. They are stopped
+			// for the update and started again on the new version.
+			dir, err := datadir.Path()
 			if err != nil {
 				return err
 			}
-			var running []string
-			for _, client := range w.clients {
-				running = append(running, client.Info.Site)
+			live, err := findRunning(ctx, dir)
+			if err != nil {
+				return err
 			}
-			w.close()
-			if len(running) > 0 {
-				what := "site " + running[0] + " is"
-				if len(running) > 1 {
-					what = "sites " + joinWords(running) + " are"
+			if live.any() && !yes {
+				fmt.Fprintf(out, "Running now: %s.\n", live.describe())
+				fmt.Fprintf(out, "To update, they are stopped and started again on %s, in the background.%s\n", latest, live.ending())
+				if !stdinIsTerminal() {
+					return errors.New("there is nobody to ask; run again with --yes to restart them on the new version, or stop them first. Nothing was changed")
 				}
-				return fmt.Errorf("%s running; stop every site first with \"plugyard site stop -s <name>\", then update. Nothing was changed", what)
-			}
-
-			if dir, err := datadir.Path(); err == nil {
-				if err := apiRunningError(ctx, dir, "update. Nothing was changed"); err != nil {
-					return err
+				fmt.Fprintf(out, "Update and restart them? [y/N] ")
+				answer, _ := bufio.NewReader(stdin).ReadString('\n')
+				switch strings.ToLower(strings.TrimSpace(answer)) {
+				case "y", "yes":
+				default:
+					return errors.New("nothing was changed")
 				}
 			}
 
@@ -114,21 +122,39 @@ func newUpdate() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("cannot find the installed program: %w", err)
 			}
+			// The download comes first: if it fails, nothing was stopped.
 			fmt.Fprintf(out, "Downloading %s\n", selfupdate.AssetName(u.OS, u.Arch))
 			program, err := u.Download(ctx, latest)
 			if err != nil {
 				return err
 			}
+			if err := live.stop(ctx, dir, out); err != nil {
+				return fmt.Errorf("%w. Nothing was changed", err)
+			}
 			if err := selfupdate.Replace(exe, program); err != nil {
+				// What was stopped comes back on the program that is
+				// still there.
+				failed := live.start(cmd, dir, out)
+				for _, f := range failed {
+					fmt.Fprintf(cmd.ErrOrStderr(), "plugyard: %s\n", f)
+				}
 				if errors.Is(err, os.ErrPermission) {
 					return fmt.Errorf("cannot replace %s: %w. Run the command from a terminal that may write there, or install again with the install script", exe, err)
 				}
 				return fmt.Errorf("cannot replace %s: %w", exe, err)
 			}
 			fmt.Fprintf(out, "Updated plugyard to %s.\nWhat changed: %s/releases/tag/%s\n", latest, base, latest)
+
+			if failed := live.start(cmd, dir, out); len(failed) > 0 {
+				for _, f := range failed {
+					fmt.Fprintf(cmd.ErrOrStderr(), "plugyard: %s\n", f)
+				}
+				return errFailed
+			}
 			return nil
 		},
 	}
 	cmd.Flags().BoolVar(&check, "check", false, "only say whether a newer release exists")
+	cmd.Flags().BoolVarP(&yes, "yes", "y", false, "restart running sites and the API on the new version, without asking")
 	return cmd
 }

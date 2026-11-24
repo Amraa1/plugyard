@@ -3,7 +3,6 @@ package cli
 import (
 	"context"
 	"errors"
-	"fmt"
 	"net/http"
 	"slices"
 	"strings"
@@ -190,14 +189,4 @@ func (apiBackend) Exec(ctx context.Context, site, pattern string, action api.Act
 		return nil, apiError(err)
 	}
 	return results, nil
-}
-
-// apiRunningError says that the API has to be stopped before the program
-// is replaced or removed, or nil when none is running.
-func apiRunningError(ctx context.Context, dataDir, then string) error {
-	info, err := api.Probe(ctx, dataDir)
-	if err != nil {
-		return nil
-	}
-	return fmt.Errorf("the API is running at %s; stop it first with \"plugyard api down\", then %s", info.URL(), then)
 }

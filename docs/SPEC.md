@@ -204,7 +204,7 @@ plugyard wait <charger>... <state> [-n, --connector <number>] [--timeout <time>]
 | `plugyard schema <chargerfile\|site\|scenario>` | Print the JSON schema of a file type. |
 | `plugyard version` | Print the version and nothing else, such as `v0.1.1`, so that a script can use it as it is. |
 | `plugyard info` | Print the version, the OCPP versions plugyard speaks, the Go version and system it was built for, the data directory, and every site with its status, charger counts and CSMS URLs. This is the output to include in a problem report. |
-| `plugyard update [--check]` | Replace the program with the latest release (section 13). |
+| `plugyard update [--check] [-y, --yes]` | Replace the program with the latest release, restarting what is running (section 13). |
 | `plugyard uninstall [-y, --yes] [--keep-data]` | Remove the program, and the saved chargers and logs (section 13). |
 
 `stats` behaves as `docker stats` does:
@@ -769,7 +769,13 @@ Ways to install:
 `plugyard update`:
 
 - Finds the latest release, and stops if the installed version is that one or newer. `--check` only reports.
-- Refuses while any site is running, and says which: a site started by one version cannot be controlled by another, since the channel between them may change.
+- A site started by one version cannot be controlled by another, since the channel between them may change. So sites and the API that are running are stopped for the update and started again on the new version:
+  - `update` says what is running and how many transactions would end, and asks `Update and restart them? [y/N]`. `-y, --yes` skips the question. Without a terminal to ask on, it changes nothing, exits with code `1` and names that flag. With nothing running it does not ask.
+  - The order is: download and check the new program, stop, replace, start again. A download that fails stops nothing.
+  - A site is stopped in the orderly way: transactions end with `StopTransaction`. It comes back in the background with the chargers that were powered on, and those send `BootNotification` again. A charger that was stopped stays stopped. A site that ran in the foreground of another terminal comes back in the background.
+  - The API comes back on the same address, with the same certificate.
+  - If the program cannot be replaced, what was stopped is started again on the program that is still there.
+  - If something does not come back, the update is done all the same. `update` says what did not start, with the command that starts it, and exits with code `1`.
 - Downloads the archive for the system it runs on, checks it against the release's `checksums.txt`, and replaces the program. If anything fails, the program that was there stays.
 - On Windows a running program cannot be deleted, so the old one is renamed and removed the next time plugyard starts.
 
@@ -785,7 +791,7 @@ Ways to install:
   | Saved chargers and logs | The files plugyard wrote in its data directory, unless `--keep-data` is given. The directory itself goes when nothing else is in it |
 
 - Shows this list with full paths and asks `Remove plugyard? [y/N]`. `-y, --yes` skips the question. Without a terminal to ask on, it removes nothing, exits with code `1` and names that flag.
-- Refuses while any site is running, and says which, as `update` does. Both also refuse while the API is running.
+- Stops sites and the API that are running, after the question has been answered with yes. The list it shows names them, and how many transactions would end.
 - Takes the program away first. When that fails, for example for lack of permission, nothing else is removed, and the message names the file and says what to do.
 - On Windows a running program cannot be deleted, so it is renamed to `plugyard.exe.old`, and a hidden command deletes it, and the folder, a few seconds after plugyard has ended.
 - Does not undo `go install`'s module cache, and does not remove files that `plugyard init` wrote.
@@ -827,7 +833,7 @@ Those stay on the command line, because each is a way from "can call the API" to
 - The API is a process of its own. It serves every charger on the machine, whichever site it belongs to. Sites know nothing of it, and it keeps running while they start and stop: a call sees the chargers there are at that moment, and an empty list when there are none.
 - There is one API per user and machine. A second `api up` is refused and says where the first one listens.
 - `status`, `logs` and `token ls` take `--format json`.
-- `update` and `uninstall` refuse while the API runs.
+- `update` stops the API and starts it again on the new version, and `uninstall` stops it (section 13).
 
 ### Addresses
 

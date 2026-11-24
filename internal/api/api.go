@@ -114,9 +114,13 @@ type Config struct {
 
 // Info says what a running API is.
 type Info struct {
-	PID     int       `json:"pid"`
-	Listen  string    `json:"listen"`
-	TLS     bool      `json:"tls"`
+	PID    int    `json:"pid"`
+	Listen string `json:"listen"`
+	TLS    bool   `json:"tls"`
+	// TLSCert and TLSKey are the files HTTPS is served with, as full
+	// paths. They are told over the socket of this machine only.
+	TLSCert string    `json:"tlsCert,omitempty"`
+	TLSKey  string    `json:"tlsKey,omitempty"`
 	Since   time.Time `json:"since"`
 	Version string    `json:"version"`
 }
@@ -232,6 +236,8 @@ func Serve(cfg Config) (*Server, error) {
 			PID:     os.Getpid(),
 			Listen:  cfg.Listen,
 			TLS:     cfg.TLSCert != "",
+			TLSCert: absolute(cfg.TLSCert),
+			TLSKey:  absolute(cfg.TLSKey),
 			Since:   time.Now().UTC().Truncate(time.Second),
 			Version: cfg.Version,
 		},
@@ -279,6 +285,17 @@ func Serve(cfg Config) (*Server, error) {
 		}
 	}()
 	return s, nil
+}
+
+// absolute returns a path that holds from any folder.
+func absolute(path string) string {
+	if path == "" {
+		return ""
+	}
+	if abs, err := filepath.Abs(path); err == nil {
+		return abs
+	}
+	return path
 }
 
 // Info says what this API is.

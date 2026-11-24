@@ -190,18 +190,6 @@ func TestAPIActsOnChargersLikeTheCommands(t *testing.T) {
 		t.Errorf("api logs --tail 1 --format json = %q", last)
 	}
 
-	// The program is not replaced or removed while the API runs.
-	fakeRelease(t, "v0.1.0", "v0.2.0", "the new program", false)
-	mustRun(t, "stop", "CP-1")
-	code, _, stderr := run("update")
-	if code != ExitFailure || !strings.Contains(stderr, `the API is running at `+base+`; stop it first with "plugyard api down", then update`) {
-		t.Errorf("update while the API runs: exit %d, stderr %q", code, stderr)
-	}
-	code, _, stderr = run("uninstall", "--yes")
-	if code != ExitFailure || !strings.Contains(stderr, `stop it first with "plugyard api down", then uninstall. Nothing was removed`) {
-		t.Errorf("uninstall while the API runs: exit %d, stderr %q", code, stderr)
-	}
-
 	if out := mustRun(t, "api", "down"); out != "The API at "+base+" is stopped\n" {
 		t.Errorf("api down printed %q", out)
 	}

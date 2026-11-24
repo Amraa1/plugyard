@@ -16,6 +16,7 @@ import (
 	"testing"
 
 	"github.com/Amraa1/plugyard/internal/csmstest"
+	"github.com/Amraa1/plugyard/internal/ocpp/v16"
 	"github.com/Amraa1/plugyard/internal/selfupdate"
 )
 
@@ -129,25 +130,100 @@ func TestUpdateRefusesWhatItCannotTrust(t *testing.T) {
 	}
 }
 
-func TestUpdateWaitsForSitesToStop(t *testing.T) {
+func TestUpdateRestartsWhatIsRunning(t *testing.T) {
 	useTempDataDir(t)
-	exe := fakeRelease(t, "v0.1.0", "v0.2.0", "the new program", false)
 	csms := csmstest.Start(t)
-	startRun(t, csms, "CP-1")
+	upDetached(t, csms)
+	// One charger is stopped and one is charging, to see that both come
+	// back as they were.
+	mustRun(t, "stop", "LOBBY-1")
+	startTransaction(t, csms, "FAST-01")
+	base := apiUp(t)
+	exe := fakeRelease(t, "v0.1.0", "v0.2.0", "the new program", false)
 
-	code, _, stderr := run("update")
-	if code != ExitFailure || !strings.Contains(stderr, "site CP-1 is running; stop every site first") || !strings.Contains(stderr, "Nothing was changed") {
-		t.Errorf("update with a site running: exit %d, stderr %q", code, stderr)
+	unchanged := func(when string) {
+		t.Helper()
+		if data, _ := os.ReadFile(exe); string(data) != "the old program" {
+			t.Fatalf("%s: the program was replaced", when)
+		}
+		if row := psRow(t, "FAST-02"); !strings.Contains(row, "online") {
+			t.Fatalf("%s: the site was stopped: %q", when, row)
+		}
 	}
-	if data, _ := os.ReadFile(exe); string(data) != "the old program" {
-		t.Error("the program was replaced while a site was running")
+
+	// With nobody to ask, nothing happens, and what is running is named.
+	oldIsTerminal := stdinIsTerminal
+	stdinIsTerminal = func() bool { return false }
+	code, stdout, stderr := run("update")
+	stdinIsTerminal = oldIsTerminal
+	if code != ExitFailure || !strings.Contains(stdout, "Running now: site depot (4 chargers) and the API at "+base+".\n") ||
+		!strings.Contains(stdout, "they are stopped and started again on v0.2.0, in the background. 1 transaction ends with StopTransaction.\n") ||
+		!strings.Contains(stderr, "run again with --yes to restart them on the new version, or stop them first. Nothing was changed") {
+		t.Errorf("update with a site running and nobody to ask: exit %d, stdout %q, stderr %q", code, stdout, stderr)
 	}
-	// Looking is still allowed.
-	if out := mustRun(t, "update", "--check"); !strings.Contains(out, "v0.2.0 is available") {
+	unchanged("with nobody to ask")
+	// Anything but yes leaves everything.
+	answer(t, "no\n")
+	if code, stdout, stderr := run("update"); code != ExitFailure || !strings.Contains(stdout, "Update and restart them? [y/N] ") || !strings.Contains(stderr, "nothing was changed") {
+		t.Errorf("update answered with no: exit %d, stdout %q, stderr %q", code, stdout, stderr)
+	}
+	unchanged("answered with no")
+	// Looking needs no answer.
+	if out := mustRun(t, "update", "--check"); !strings.Contains(out, "v0.2.0 is available") || strings.Contains(out, "Running now") {
 		t.Errorf("update --check with a site running printed %q", out)
+	}
+
+	out := mustRun(t, "update", "--yes")
+	if strings.Contains(out, "[y/N]") {
+		t.Errorf("update --yes asked:\n%s", out)
+	}
+	// In this order: download, stop, replace, start again.
+	last := -1
+	for _, want := range []string{
+		"Downloading ", "Site depot is stopped\n", "The API at " + base + " is stopped\n", "Updated plugyard to v0.2.0.\n",
+		"Site depot is running again, in the background, with 4 chargers\n", "The API is running again, in the background, at " + base + "\n",
+	} {
+		at := strings.Index(out, want)
+		if at < 0 || at < last {
+			t.Fatalf("update --yes is missing %q, or has it out of order:\n%s", want, out)
+		}
+		last = at
+	}
+	if data, _ := os.ReadFile(exe); string(data) != "the new program" {
+		t.Errorf("the program holds %q after the update", data)
+	}
+
+	// The transaction ended in the orderly way, and everything is back as
+	// it was: the same chargers on, the stopped one still stopped.
+	csms.WaitForCalls(t, "FAST-01", v16.ActionStopTransaction, 1)
+	mustRun(t, "wait", "FAST-*", "online", "--timeout", "10s")
+	if row := psRow(t, "LOBBY-1"); !strings.Contains(row, "stopped") {
+		t.Errorf("a charger that was stopped came back on: %q", row)
+	}
+	if status, body := apiCall(t, base, "GET", "/v1/chargers/FAST-02", "", ""); status != 200 || !strings.Contains(body, `"chargePointId":"FAST-02"`) {
+		t.Errorf("the API after the update = %d %s", status, body)
 	}
 
 	if code, _, stderr := run("update", "now"); code != ExitUsage || stderr == "" {
 		t.Errorf("update with an argument: exit %d", code)
+	}
+}
+
+// A download that fails stops nothing.
+func TestUpdateStopsNothingWhenTheDownloadFails(t *testing.T) {
+	useTempDataDir(t)
+	csms := csmstest.Start(t)
+	upDetached(t, csms)
+	exe := fakeRelease(t, "v0.1.0", "v0.2.0", "tampered with", true)
+
+	code, stdout, stderr := run("update", "--yes")
+	if code != ExitFailure || !strings.Contains(stderr, "does not match its checksum; nothing was changed") || strings.Contains(stdout, "is stopped") {
+		t.Errorf("update with a wrong checksum: exit %d, stdout %q, stderr %q", code, stdout, stderr)
+	}
+	if data, _ := os.ReadFile(exe); string(data) != "the old program" {
+		t.Error("the program was replaced by a download that failed its checksum")
+	}
+	if row := psRow(t, "FAST-01"); !strings.Contains(row, "online") {
+		t.Errorf("the site was stopped for a download that failed: %q", row)
 	}
 }

@@ -34,7 +34,9 @@ plugyard update --check     # is there a newer release?
 plugyard update             # install it
 ```
 
-`plugyard update` replaces the program with the latest release, after checking the download against its checksums. Your saved chargers and logs are kept. Stop running sites first (`plugyard site stop`): a site started by one version cannot be controlled by another. If you installed with `go install`, run that command again instead.
+`plugyard update` replaces the program with the latest release, after checking the download against its checksums. Your saved chargers and logs are kept. If you installed with `go install`, run that command again instead.
+
+Sites and the API that are running are restarted on the new version, because a site started by one version cannot be controlled by another. `plugyard update` says which ones and asks first; `--yes` answers in advance. Transactions that are running end with `StopTransaction`, and the chargers boot again, as real chargers would after a restart.
 
 ### Uninstall
 
@@ -48,7 +50,7 @@ It shows what it is about to remove, with the full paths, and asks first:
 - on Windows, the entry the install script added to your PATH;
 - your saved chargers and logs. `--keep-data` leaves these, for when you plan to install again.
 
-Stop running sites first, as for an update. `--yes` skips the question, for scripts. Files that `plugyard init` wrote in your own folders are yours and stay.
+Sites and the API that are running are stopped first, and the question names them. `--yes` skips the question, for scripts. Files that `plugyard init` wrote in your own folders are yours and stay.
 
 ## Quick start
 
