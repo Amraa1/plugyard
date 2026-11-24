@@ -1,0 +1,78 @@
+# plugyard
+
+> plugyard simulates EV chargers that speak OCPP 1.6J, so that a CSMS (the server that manages chargers) can be developed and tested without hardware. It is one program with a command line like Docker's. This guide is for AI agents that drive it. `plugyard agents` prints the copy that matches the installed version.
+
+Install: https://github.com/Amraa1/plugyard#install. `plugyard version` prints the installed version.
+
+## Rules
+
+1. **Start chargers in the background.** Use `plugyard site up -d`, or `plugyard run ... -d` for one charger. Without `-d` these commands print the log until they are interrupted, and you would wait for ever. `plugyard logs -f` and `plugyard site logs -f` never return either.
+2. **Wait with `plugyard wait`, never with `sleep`.** `plugyard wait CP-1 Charging` returns when the state is reached, and exits with 1 if it is not reached within `--timeout` (30 seconds unless given).
+3. **Read output as JSON.** `--format json` prints one object per line on `ps`, `logs`, `stats`, `exec`, `site ls`, `scenario run`, `start`, `stop`, `restart`, `kill` and `rm`, and a single object on `inspect` and `info`.
+4. **Trust the exit code.** `0` it worked. `1` it could not be done; standard error says why and what to do. `2` a mistake in the command or in a file; fix it and run again.
+5. **The CSMS must be running first.** A charger connects to the CSMS, at `<csms url>/<charge point ID>`. While the CSMS cannot be reached the charger stays `connecting` and retries by itself.
+6. **Nothing asks a question when there is no terminal.** A command that would ask stops with exit code 1 and names the flag that answers it, such as `--yes`.
+7. **Clean up.** `plugyard site down` stops the chargers of the site file in the current folder. `plugyard stop <charger>` stops one that was started with `run`.
+
+## A first session
+
+Run these in an empty folder, with the CSMS listening on `ws://localhost:9000/ocpp`:
+
+```sh
+plugyard init --csms ws://localhost:9000/ocpp
+plugyard site up -d
+plugyard wait 'CP-*' online
+plugyard exec CP-1 plug
+plugyard exec CP-1 tap 04A1B2C3
+plugyard wait CP-1 Charging
+plugyard logs CP-1 --format json
+plugyard exec CP-1 tap 04A1B2C3
+plugyard wait CP-1 Finishing
+plugyard exec CP-1 unplug
+plugyard wait CP-1 Available
+plugyard site down
+```
+
+What each step does:
+
+- `init` writes `site.yaml` (three chargers, `CP-1` to `CP-3`), the `Chargerfile` they are made from, and `scenario.yaml`. It never overwrites a file.
+- `site up -d` starts the chargers of `site.yaml` and returns. Each one connects and sends `BootNotification`.
+- `wait 'CP-*' online` returns once the CSMS has accepted all three. If it times out, the CSMS is not reachable or does not accept the chargers; `plugyard logs CP-1 --tail 20` shows which.
+- `exec CP-1 plug` plugs an EV into connector 1. `-n 2` names another connector. `--soc 30% --battery 82kWh` describe the EV.
+- `exec CP-1 tap <idTag>` presents an RFID tag: the charger sends `Authorize`, and then starts a transaction, or stops the one that is running. The exit code is `0` whenever the tag was presented, also when the CSMS rejects it; the line printed says which.
+- `logs CP-1 --format json` prints every event and OCPP message of the charger, oldest first. `--since 1m` and `--tail 20` shorten it.
+
+## Reading what happened
+
+A line of `plugyard logs --format json`:
+
+```json
+{"time":"2026-01-02T15:04:05.010Z","chargePointId":"CP-1","kind":"sent","text":"[2,\"19\",\"StartTransaction\",{...}]","message":[2,"19","StartTransaction",{"connectorId":1,"idTag":"04A1B2C3","meterStart":0,"timestamp":"2026-01-02T15:04:05.010Z"}]}
+```
+
+- `kind` is `sent` (charger to CSMS), `received` (CSMS to charger) or `event` (something that happened in the charger, in words, in `text`).
+- `message` is the OCPP message as it went over the wire: `[2, id, action, payload]` for a call, `[3, id, payload]` for its answer, `[4, id, code, description, details]` for an error.
+- `plugyard ps --format json` gives the connection state and the status of each connector. `plugyard inspect CP-1 --format json` gives everything about one charger: transactions, meter values, configuration keys, charging profiles.
+
+## Other things a charger can do
+
+| To test | Command |
+|---|---|
+| A fault, and recovery from it | `plugyard exec CP-1 fault GroundFailure`, then `plugyard exec CP-1 clear` |
+| A lost connection, with messages queued and sent later | `plugyard exec CP-1 offline --for 30s` |
+| A reboot | `plugyard exec CP-1 reboot` |
+| A power cut and return | `plugyard kill CP-1`, then `plugyard start CP-1` |
+| A firmware update or diagnostics upload that fails | `plugyard exec CP-1 fail download` (or `install`, `upload`) before the CSMS asks for it |
+| Many chargers at once | a pattern in place of the ID: `plugyard exec 'CP-*' plug` |
+| Charging that goes faster than real time | `plugyard site up -d --speed 60` |
+| A scripted sequence of timed steps | `plugyard scenario run scenario.yaml` |
+
+What the CSMS sends is answered as a real charger answers: `RemoteStartTransaction`, `RemoteStopTransaction`, `Reset`, `ChangeConfiguration`, `GetConfiguration`, `ChangeAvailability`, `UnlockConnector`, `TriggerMessage`, `SetChargingProfile`, `ClearChargingProfile`, `GetCompositeSchedule`, `UpdateFirmware`, `GetDiagnostics`, `ClearCache` and `DataTransfer`. Local authorization lists and reservations are answered with `NotImplemented`.
+
+## Where to look next
+
+- `plugyard <command> --help` for every flag of a command. `plugyard exec --help` lists the actions and the error codes.
+- `plugyard schema site`, `plugyard schema chargerfile` and `plugyard schema scenario` print the JSON schema of each file, to write or check one.
+- `plugyard scenario validate scenario.yaml` checks a scenario and shows its plan without running it.
+- [The specification](https://github.com/Amraa1/plugyard/blob/main/docs/SPEC.md) says exactly how a charger behaves, section by section.
+- [The README](https://github.com/Amraa1/plugyard/blob/main/README.md) is the introduction written for people.

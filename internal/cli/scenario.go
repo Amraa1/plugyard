@@ -402,8 +402,9 @@ const starterURL = "${CSMS_URL:-ws://localhost:9000/ocpp}"
 
 func newInit() *cobra.Command {
 	var (
-		csms  string
-		force bool
+		csms   string
+		force  bool
+		agents bool
 	)
 	cmd := &cobra.Command{
 		Use:   "init [directory]",
@@ -415,9 +416,15 @@ func newInit() *cobra.Command {
 			"The chargers connect to the CSMS_URL environment variable, or to\n" +
 			"ws://localhost:9000/ocpp when it is not set. --csms writes your CSMS's\n" +
 			"address into the site file instead. A file that exists is never\n" +
-			"overwritten unless --force is given.",
+			"overwritten unless --force is given.\n\n" +
+			"--agents also installs a skill for AI agents, such as coding assistants,\n" +
+			"so that an agent working in the folder knows plugyard. It does so with\n" +
+			"the skills tool (https://skills.sh), which needs Node.js: it runs\n" +
+			"\"npx skills add " + skillSource + "\". In a folder that already has the three\n" +
+			"files, --agents installs only the skill and leaves the files alone.",
 		Example: "  plugyard init\n" +
-			"  plugyard init my-site --csms ws://localhost:8080/ocpp",
+			"  plugyard init my-site --csms ws://localhost:8080/ocpp\n" +
+			"  plugyard init --agents",
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			dir := "."
@@ -431,19 +438,37 @@ func newInit() *cobra.Command {
 				}
 			}
 
+			out := cmd.OutOrStdout()
+			var existing []string
 			if !force {
-				var existing []string
 				for _, name := range starterFiles {
 					if _, err := os.Stat(filepath.Join(dir, name)); err == nil {
 						existing = append(existing, name)
 					}
 				}
-				if len(existing) > 0 {
+				if len(existing) > 0 && !agents {
 					return fmt.Errorf("%s already exists here and was left alone; nothing was written. Use --force to overwrite, or name another directory", joinWords(existing))
+				}
+			}
+			// Without npx there is no skill, and then nothing is written.
+			npx := ""
+			if agents {
+				var err error
+				if npx, err = findNpx(); err != nil {
+					return errNoNpx()
 				}
 			}
 			if err := os.MkdirAll(dir, 0o755); err != nil {
 				return err
+			}
+			if len(existing) > 0 {
+				// A project that has the files only gains the skill.
+				verb := "is"
+				if len(existing) > 1 {
+					verb = "are"
+				}
+				fmt.Fprintf(out, "%s %s here already and left alone.\n", joinWords(existing), verb)
+				return installSkill(cmd.Context(), npx, dir, out, cmd.ErrOrStderr())
 			}
 			for _, name := range starterFiles {
 				data, err := starter.ReadFile("starter/" + name)
@@ -459,33 +484,50 @@ func newInit() *cobra.Command {
 				}
 			}
 
-			out := cmd.OutOrStdout()
+			if agents {
+				fmt.Fprintf(out, "Wrote %s.\n", joinWords(starterFiles))
+				if err := installSkill(cmd.Context(), npx, dir, out, cmd.ErrOrStderr()); err != nil {
+					return err
+				}
+				fmt.Fprintln(out)
+			}
+
 			where := ""
-			if dir != "." {
+			switch {
+			case agents && dir != ".":
+				fmt.Fprintf(out, "Next:\n  cd %s\n", dir)
+			case agents:
+				fmt.Fprint(out, "Next:\n")
+			case dir != ".":
 				where = " in " + dir
 				fmt.Fprintf(out, "Wrote %s%s.\n\nNext:\n  cd %s\n", joinWords(starterFiles), where, dir)
-			} else {
+			default:
 				fmt.Fprintf(out, "Wrote %s.\n\nNext:\n", joinWords(starterFiles))
 			}
 			target := csms
 			if target == "" {
 				target = "ws://localhost:9000/ocpp, or the CSMS_URL environment variable"
 			}
-			writeNext(out, target)
+			writeNext(out, target, !agents)
 			return nil
 		},
 	}
 	cmd.Flags().StringVar(&csms, "csms", "", "the address of your CSMS, ws:// or wss://, to write into site.yaml")
 	cmd.Flags().BoolVar(&force, "force", false, "overwrite files that exist")
+	cmd.Flags().BoolVar(&agents, "agents", false, "also install a skill for AI agents, with \"npx skills add "+skillSource+"\"")
 	return cmd
 }
 
-func writeNext(out io.Writer, target string) {
-	writeTable(out, [][]cell{
+func writeNext(out io.Writer, target string, offerSkill bool) {
+	rows := [][]cell{
 		{plain("  plugyard site up"), plain("start 3 chargers; they connect to " + target)},
 		{plain("  plugyard ps"), plain("in a second terminal: see them")},
 		{plain("  plugyard scenario run scenario.yaml"), plain("plug in, charge, fault and unplug by script")},
-	})
+	}
+	if offerSkill {
+		rows = append(rows, []cell{plain("  plugyard init --agents"), plain("add a skill, so an AI agent working here knows plugyard")})
+	}
+	writeTable(out, rows)
 }
 
 // joinWords joins names as a sentence lists them: "a, b and c".
