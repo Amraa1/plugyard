@@ -41,6 +41,8 @@ type Timing struct {
 	ReconnectMax time.Duration
 	// Tick is how often the EVs on the connectors are advanced.
 	Tick time.Duration
+	// Reboot is how long the charger is away when it reboots.
+	Reboot time.Duration
 }
 
 // Config describes one charger.
@@ -95,6 +97,7 @@ const (
 	defaultBootRetryInterval = 30 * time.Second
 	defaultTick              = time.Second
 	defaultMeterSaveInterval = 5 * time.Second
+	defaultReboot            = time.Second
 )
 
 // Connection states, as shown by "plugyard ps".
@@ -113,6 +116,16 @@ var defaultConfig = map[string]string{
 	"MeterValuesSampledData":     v16.MeasurandEnergy + "," + v16.MeasurandPower,
 	"StopTxnSampledData":         v16.MeasurandEnergy,
 	"StopTransactionOnInvalidId": "true",
+	// How failures are handled.
+	"TransactionMessageAttempts":      "3",
+	"TransactionMessageRetryInterval": "60",
+	"AllowOfflineTxForUnknownId":      "false",
+	"AuthorizationCacheEnabled":       "false",
+	"LocalAuthorizeOffline":           "true",
+	"AuthorizeRemoteTxRequests":       "false",
+	// What the charger is.
+	"SupportedFeatureProfiles": "Core,RemoteTrigger",
+	"GetConfigurationMaxKeys":  "500",
 	// MeterSaveInterval is plugyard's own key: how often, in seconds, meter
 	// readings are saved to disk during a transaction. It bounds the energy a
 	// power cut loses from the reported meterStop.
@@ -139,7 +152,23 @@ type Charger struct {
 	connection string      // Connecting, Online or Offline
 	conn       *ocppj.Conn // set while the CSMS has accepted the charger
 	connectors []*connector
-	outbox     []*outMsg
+	// zero stands for the charger as a whole, which OCPP addresses as
+	// connector 0. It is reported only when it is not Available.
+	zero   *connector
+	outbox []*outMsg
+	// retryAt is when the message at the head of the outbox may be sent
+	// again after the CSMS answered it with an error.
+	retryAt time.Time
+	// authCache holds what the CSMS said about tags, when the authorization
+	// cache is on.
+	authCache map[string]v16.IDTagInfo
+	// netDown says the network connection was taken down on purpose.
+	netDown  bool
+	netTimer *time.Timer
+	// network, reboots and heartbeatChanged wake the connection.
+	network          chan struct{}
+	reboots          chan reboot
+	heartbeatChanged chan struct{}
 	// unconfirmed holds, by reference, the transactions whose
 	// StartTransaction the CSMS has not answered yet.
 	unconfirmed map[int]*transaction
@@ -167,6 +196,9 @@ type outMsg struct {
 	// volatile messages are not saved: they describe a moment, and are sent
 	// afresh after the next boot.
 	volatile bool
+	// attempts counts how often the CSMS has answered the message with an
+	// error.
+	attempts int
 }
 
 // New checks cfg and returns a charger that has not been powered on yet.
@@ -208,6 +240,9 @@ func New(cfg Config) (*Charger, error) {
 	if cfg.Timing.Tick <= 0 {
 		cfg.Timing.Tick = defaultTick
 	}
+	if cfg.Timing.Reboot <= 0 {
+		cfg.Timing.Reboot = defaultReboot
+	}
 
 	c := &Charger{
 		cfg:         cfg,
@@ -217,6 +252,12 @@ func New(cfg Config) (*Charger, error) {
 		unconfirmed: map[int]*transaction{},
 		wake:        make(chan struct{}, 1),
 		connection:  Connecting,
+		zero:        &connector{status: v16.StatusAvailable, code: v16.ErrorCodeNoError},
+		authCache:   map[string]v16.IDTagInfo{},
+
+		network:          make(chan struct{}, 1),
+		reboots:          make(chan reboot, 1),
+		heartbeatChanged: make(chan struct{}, 1),
 	}
 	for key, value := range defaultConfig {
 		c.config[key] = value
@@ -224,11 +265,13 @@ func New(cfg Config) (*Charger, error) {
 	for key, value := range cfg.Model.Config {
 		c.config[key] = value
 	}
+	c.config["NumberOfConnectors"] = strconv.Itoa(len(cfg.Model.Connectors))
 	for _, mc := range cfg.Model.Connectors {
 		c.connectors = append(c.connectors, &connector{
 			id:       mc.ID,
 			maxPower: float64(mc.MaxPower),
 			status:   v16.StatusAvailable,
+			code:     v16.ErrorCodeNoError,
 		})
 	}
 	if cfg.Restore != nil {
@@ -283,9 +326,30 @@ func (c *Charger) Run(ctx context.Context) error {
 	defer c.powerOff()
 
 	for {
+		// A network that was taken down stays down until it is restored.
+		if !c.waitForNetwork(ctx) {
+			return nil
+		}
+
 		connected, err := c.session(ctx)
 		if ctx.Err() != nil {
 			return nil
+		}
+		switch {
+		case errors.Is(err, errReboot):
+			c.mu.Lock()
+			c.connection = Offline
+			c.mu.Unlock()
+			c.event("rebooting")
+			if !sleep(ctx, c.cfg.Timing.Reboot) {
+				return nil
+			}
+			c.event("powered on again")
+			wait = c.cfg.Timing.ReconnectMin
+			continue
+		case errors.Is(err, errNetwork):
+			wait = c.cfg.Timing.ReconnectMin
+			continue
 		}
 		if connected {
 			c.event("connection lost: %v", err)
@@ -367,7 +431,7 @@ func (c *Charger) session(ctx context.Context) (connected bool, err error) {
 	}
 	dialCtx, cancel := context.WithTimeout(ctx, c.cfg.Timing.CallTimeout)
 	conn, err := ocppj.Dial(dialCtx, c.url, ocppj.DialOptions{
-		Options:            ocppj.Options{OnFrame: c.frame},
+		Options:            ocppj.Options{OnFrame: c.frame, Handler: c.handle},
 		Subprotocol:        v16.Subprotocol,
 		Username:           c.cfg.ID,
 		Password:           c.cfg.CSMS.Password,
@@ -383,9 +447,11 @@ func (c *Charger) session(ctx context.Context) (connected bool, err error) {
 		c.event("warning: the CSMS did not select the %q WebSocket subprotocol", v16.Subprotocol)
 	}
 
+	// goodbye says the charger is leaving on purpose and closes the
+	// connection properly. Otherwise the connection is dropped.
+	goodbye := false
 	defer func() {
-		if ctx.Err() != nil && !c.isKilled() {
-			// Orderly shutdown: say goodbye properly.
+		if goodbye && !c.isKilled() {
 			_ = conn.Close()
 			c.event("disconnected")
 			return
@@ -403,6 +469,9 @@ func (c *Charger) session(ctx context.Context) (connected bool, err error) {
 	c.mu.Lock()
 	c.conn = conn
 	c.connection = Online
+	if c.zero.status != v16.StatusAvailable {
+		c.enqueueStatus(c.zero)
+	}
 	for _, k := range c.connectors {
 		c.enqueueStatus(k)
 	}
@@ -420,11 +489,44 @@ func (c *Charger) session(ctx context.Context) (connected bool, err error) {
 		if err := c.drain(conn); err != nil {
 			return true, err
 		}
+
+		// retry fires when a message the CSMS answered with an error is due
+		// to be sent again.
+		var retry <-chan time.Time
+		c.mu.Lock()
+		if d := time.Until(c.retryAt); d > 0 && len(c.outbox) > 0 {
+			retry = time.After(d)
+		}
+		c.mu.Unlock()
+
 		select {
+		case <-retry:
+		case <-c.heartbeatChanged:
+			c.mu.Lock()
+			interval := c.configuredHeartbeatInterval()
+			c.mu.Unlock()
+			ticker.Reset(interval)
+		case <-c.network:
+			c.mu.Lock()
+			down := c.netDown
+			c.mu.Unlock()
+			if down {
+				return true, errNetwork
+			}
+		case r := <-c.reboots:
+			// The transactions end and the CSMS is told before the charger
+			// goes away.
+			c.mu.Lock()
+			c.endForReboot(r.reason)
+			c.unlock()
+			_ = c.drain(conn)
+			goodbye = !r.hard
+			return true, errReboot
 		case <-ctx.Done():
 			if c.isKilled() {
 				return true, ctx.Err()
 			}
+			goodbye = true
 			// Orderly shutdown: end the transactions and tell the CSMS
 			// before leaving.
 			c.mu.Lock()
@@ -453,7 +555,7 @@ func (c *Charger) session(ctx context.Context) (connected bool, err error) {
 func (c *Charger) drain(conn *ocppj.Conn) error {
 	for {
 		c.mu.Lock()
-		if len(c.outbox) == 0 {
+		if len(c.outbox) == 0 || time.Now().Before(c.retryAt) {
 			c.mu.Unlock()
 			return nil
 		}
@@ -467,10 +569,19 @@ func (c *Charger) drain(conn *ocppj.Conn) error {
 		var callErr *ocppj.CallError
 		switch {
 		case errors.As(err, &callErr):
-			c.event("the CSMS answered %s with an error: %v", m.action, callErr)
+			if c.retryLater(m, callErr) {
+				return nil
+			}
 			result = nil
 		case err != nil:
 			return err
+		case m.action == v16.ActionStartTransaction && !readableStart(result):
+			// An answer that cannot be read is no better than an error.
+			unreadable := &ocppj.CallError{Code: ocppj.ErrFormationViolation, Description: "its answer could not be read: " + string(result)}
+			if c.retryLater(m, unreadable) {
+				return nil
+			}
+			result = nil
 		}
 
 		c.mu.Lock()
@@ -485,6 +596,70 @@ func (c *Charger) drain(conn *ocppj.Conn) error {
 			c.dirty = true
 		}
 		c.unlock()
+	}
+}
+
+// readableStart reports whether an answer to StartTransaction carries what
+// the charger needs from it.
+func readableStart(result json.RawMessage) bool {
+	var resp v16.StartTransactionResponse
+	return json.Unmarshal(result, &resp) == nil && resp.IDTagInfo.Status != ""
+}
+
+// retryLater decides what happens to a message the CSMS answered with an
+// error. Transaction messages are sent again, after a wait that grows with
+// each attempt, until TransactionMessageAttempts is reached; it then reports
+// true and the message keeps its place at the head of the queue, so that
+// order is kept. Anything else, and a message out of attempts, is dropped.
+func (c *Charger) retryLater(m *outMsg, callErr *ocppj.CallError) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	transactional := m.action == v16.ActionStartTransaction || m.action == v16.ActionStopTransaction || m.action == v16.ActionMeterValues
+	if !transactional {
+		c.event("the CSMS answered %s with an error: %v", m.action, callErr)
+		return false
+	}
+	m.attempts++
+	limit := max(c.configInt("TransactionMessageAttempts", 3), 1)
+	if m.attempts >= limit {
+		c.event("the CSMS answered %s with an error %d times: %v; the message is dropped", m.action, m.attempts, callErr)
+		return false
+	}
+	wait := time.Duration(m.attempts) * c.configSeconds("TransactionMessageRetryInterval")
+	c.retryAt = time.Now().Add(wait)
+	c.event("the CSMS answered %s with an error: %v; sending it again in %s (attempt %d of %d)", m.action, callErr, wait, m.attempts+1, limit)
+	return true
+}
+
+// waitForNetwork waits while the network connection is taken down. It
+// reports false when ctx ends first.
+func (c *Charger) waitForNetwork(ctx context.Context) bool {
+	for {
+		c.mu.Lock()
+		down := c.netDown
+		if down {
+			c.connection = Offline
+		}
+		c.mu.Unlock()
+		if !down {
+			return true
+		}
+		select {
+		case <-c.network:
+		case <-ctx.Done():
+			return false
+		}
+	}
+}
+
+// bootRequest returns the charger's BootNotification.
+func (c *Charger) bootRequest() v16.BootNotificationRequest {
+	m := c.cfg.Model
+	return v16.BootNotificationRequest{
+		ChargePointVendor: m.Vendor,
+		ChargePointModel:  m.Name,
+		FirmwareVersion:   m.Firmware,
 	}
 }
 
@@ -503,14 +678,9 @@ func (c *Charger) enqueue(m *outMsg) {
 // boot sends BootNotification until the CSMS accepts the charger, and
 // returns the heartbeat interval to use.
 func (c *Charger) boot(ctx context.Context, conn *ocppj.Conn) (time.Duration, error) {
-	m := c.cfg.Model
 	for {
 		var resp v16.BootNotificationResponse
-		err := c.call(ctx, conn, v16.ActionBootNotification, v16.BootNotificationRequest{
-			ChargePointVendor: m.Vendor,
-			ChargePointModel:  m.Name,
-			FirmwareVersion:   m.Firmware,
-		}, &resp)
+		err := c.call(ctx, conn, v16.ActionBootNotification, c.bootRequest(), &resp)
 		if err != nil {
 			return 0, err
 		}
@@ -520,7 +690,9 @@ func (c *Charger) boot(ctx context.Context, conn *ocppj.Conn) (time.Duration, er
 		if resp.Status == v16.RegistrationAccepted {
 			c.event("accepted by the CSMS")
 			if interval <= 0 {
+				c.mu.Lock()
 				interval = c.configuredHeartbeatInterval()
+				c.mu.Unlock()
 			}
 			return interval, nil
 		}

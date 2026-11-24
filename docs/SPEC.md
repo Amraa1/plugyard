@@ -136,15 +136,16 @@ plugyard exec <charger> <action> [arguments] [-n, --connector <number>]
 | `plug` | `--ev <preset>`, `--battery`, `--soc`, `--max-power`, `--target-soc`, `--curve <name>` | Plug an EV into the connector |
 | `unplug` | | Remove the EV |
 | `tap` | `<idTag>` | Present an RFID tag: `Authorize`, then start or stop the transaction |
-| `fault` | `<errorCode>` | Report a fault with `StatusNotification` |
+| `fault` | `<errorCode>`, `--info <text>`, `--vendor-code <code>` | Report a fault with `StatusNotification` |
 | `clear` | | Recover from the fault |
-| `offline` | | Drop the network connection; the charger keeps running |
+| `offline` | `--for <duration>` | Drop the network connection; the charger keeps running |
 | `online` | | Restore the network connection |
 | `reboot` | | Reboot the charger |
 
-- `--connector` defaults to 1 for `plug`, `unplug` and `tap`.
+- `--connector` defaults to 1 for `plug`, `unplug`, `tap`, `fault` and `clear`.
+- `fault` and `clear` also accept `--connector 0`, which means the charger as a whole, as in OCPP.
 - Giving `--connector` to a whole-charger action (`offline`, `online`, `reboot`) is an error.
-- `plugyard exec <charger> --help` lists the actions.
+- `plugyard exec --help` lists the actions and the error codes.
 - `exec` waits for the immediate outcome of the action and prints it, for example that a tag was accepted and a transaction started, or that the CSMS rejected the tag.
 - The exit code is `0` when the action was delivered, whatever the CSMS answered. A rejected tag is the CSMS's answer and not a failure. Exit code `1` means the action could not be carried out, for example because no charger matched or the connector already has an EV.
 - `exec` prints one line per matched charger, sorted by charge point ID: the ID, the connector, `ok` or `failed`, and the outcome or the reason. When the charger argument matched several chargers the action runs on every one of them, a summary line follows (`18 of 20 succeeded, 2 failed`), and the exit code is `1` if any failed. Chargers on which the action worked are not rolled back.
@@ -173,6 +174,7 @@ connectors:
 config:                      # OCPP configuration keys and their defaults
   HeartbeatInterval: 300
   MeterValueSampleInterval: 60
+dataTransfer: [com.acme]     # vendor IDs whose DataTransfer requests are accepted
 onEvFull: stop               # stop | suspend
 startOn: tap                 # tap | plug
 startTag: FREEVEND           # idTag used when startOn is plug
@@ -182,7 +184,8 @@ startTag: FREEVEND           # idTag used when startOn is plug
 |---|---|
 | `vendor`, `model`, `firmware` | Sent in `BootNotification` |
 | `connectors` | Numbered outlets with type and maximum power |
-| `config` | Default values of OCPP configuration keys |
+| `config` | Default values of OCPP configuration keys. A key that is not one of the charger's own is kept as text, reported by `GetConfiguration` and changeable by the CSMS |
+| `dataTransfer` | Vendor IDs for which a `DataTransfer` request from the CSMS is answered `Accepted`. Any other vendor ID is answered `UnknownVendorId` |
 | `onEvFull` | `stop` (default): end the transaction and go to `Finishing`. `suspend`: report `SuspendedEV` and keep the transaction open. |
 | `startOn` | `tap` (default): a transaction starts when a tag is presented. `plug`: it starts on plug-in using `startTag`. |
 
@@ -318,7 +321,7 @@ A curve must start at 0% and end at 100% state of charge, and its power share mu
 - With `startOn: plug`, a transaction starts on plug-in using `startTag`. A tap can still stop it, under the same rules, as can unplugging.
 - A tap on a connector that is `Finishing` is refused: the EV must be unplugged before a new transaction can start.
 - When the EV reaches its target, `onEvFull` decides between `StopTransaction` followed by `Finishing`, and `SuspendedEV` with the transaction left open.
-- `StopTransaction` reasons: `Local` for a tap, `EVDisconnected` for an unplug, `Remote` for a remote stop, `DeAuthorized` as above, and `Other` when the EV is full, since OCPP 1.6 has no reason for that.
+- `StopTransaction` reasons: `Local` for a tap, `EVDisconnected` for an unplug, `Remote` for a remote stop, `DeAuthorized` as above, `SoftReset`, `HardReset` and `Reboot` for those, `UnlockCommand` for `UnlockConnector`, `PowerLoss` after a power cut, and `Other` when the EV is full or the connector faults, since OCPP 1.6 has no reason for either.
 - When a charging profile limits a connector to zero during a transaction, the connector reports `SuspendedEVSE` and returns to `Charging` when the limit rises.
 
 ### Metering
@@ -331,7 +334,49 @@ A curve must start at 0% and end at 100% state of charge, and its power share mu
 
 ### CSMS-initiated operations
 
-Handled automatically with no user action: `RemoteStartTransaction`, `RemoteStopTransaction`, `Reset`, `ChangeConfiguration`, `GetConfiguration`, `ChangeAvailability`, `UnlockConnector`, `ClearCache`, `DataTransfer`, `TriggerMessage`, `SetChargingProfile`, `ClearChargingProfile`, `GetCompositeSchedule`.
+Handled automatically with no user action:
+
+| Request | What the charger does |
+|---|---|
+| `RemoteStartTransaction` | Behaves as after an accepted tap: starts a transaction if an EV is plugged in, and otherwise reports `Preparing` and waits `ConnectionTimeOut` seconds for one. With no connector named it picks one with an EV waiting, then the lowest-numbered free one. `Rejected` when no connector is free. With `AuthorizeRemoteTxRequests` set to `true` (default `false`) it sends `Authorize` for the tag first |
+| `RemoteStopTransaction` | Stops the transaction with reason `Remote`. `Rejected` for a transaction ID it does not have |
+| `Reset` | Ends transactions with `StopTransaction`, reason `SoftReset` or `HardReset`, then reboots: it is away for about a second and boots again. A soft reset closes the connection properly; a hard reset drops it |
+| `GetConfiguration` | Reports the keys asked for, or all of them, each with its value and whether it is read-only |
+| `ChangeConfiguration` | Changes a key at once and saves it. `Rejected` for a read-only key or a value that does not fit, such as text for a number. `NotSupported` for a key the charger does not have |
+| `ChangeAvailability` | Makes a connector `Unavailable` or available again. A connector in a transaction answers `Scheduled` and becomes `Unavailable` when the transaction ends. Connector 0 means the charger and all its connectors. Availability is saved |
+| `UnlockConnector` | Ends a transaction on the connector with reason `UnlockCommand` and answers `Unlocked`. The EV stays until it is unplugged |
+| `ClearCache` | Empties the authorization cache |
+| `DataTransfer` | `Accepted` for the vendor IDs the Chargerfile lists under `dataTransfer`, `UnknownVendorId` otherwise |
+| `TriggerMessage` | Sends the `BootNotification`, `Heartbeat`, `MeterValues` or `StatusNotification` asked for. `NotImplemented` for the firmware and diagnostics messages |
+
+- Requests of Firmware Management, Local Auth List Management and Reservation are answered with the error `NotSupported`.
+- `SetChargingProfile`, `ClearChargingProfile` and `GetCompositeSchedule` are handled as well: a charging profile limits the power a connector offers, as described under Transactions.
+- A request whose payload cannot be read is answered with the error `FormationViolation`, and one the charger does not know with `NotImplemented`.
+- Read-only keys: `NumberOfConnectors`, `SupportedFeatureProfiles` and `GetConfigurationMaxKeys`.
+
+### Failures
+
+Failures are caused on purpose, with actions, so that a CSMS can be tested against them.
+
+**Faults.** `exec <charger> fault <errorCode>` makes a connector report `Faulted` with one of the OCPP 1.6 error codes: `ConnectorLockFailure`, `EVCommunicationError`, `GroundFailure`, `HighTemperature`, `InternalError`, `LocalListConflict`, `OtherError`, `OverCurrentFailure`, `OverVoltage`, `PowerMeterFailure`, `PowerSwitchFailure`, `ReaderFailure`, `ResetFailure`, `UnderVoltage`, `WeakSignal`.
+
+- A transaction on the connector ends with reason `Other`.
+- While faulted, an EV can still be plugged in or unplugged, but a tap and a remote start are refused.
+- `clear` returns the connector to `Available`, or to `Finishing` if an EV is still plugged in.
+- With `--connector 0` the fault is the charger's: it is reported for connector 0, every transaction ends, and nothing starts on any connector until it is cleared.
+- A fault is saved, and is reported again when the charger next boots.
+
+**Network loss.** The charger cannot tell why the CSMS is out of reach, so it behaves the same whatever the cause: charging continues, transaction messages queue in order, and after reconnecting it boots and sends them before anything new.
+
+- `exec <charger> offline` takes the connection down until `online`. `--for 30s` brings it back after that time.
+- When the CSMS goes away by itself, the charger retries by itself, as described under Connection.
+- A tap while offline is refused, since the tag cannot be authorized, unless one of two standard keys allows it. `AllowOfflineTxForUnknownId: true` accepts any tag. `AuthorizationCacheEnabled: true` has the charger remember what the CSMS said about each tag and accept the ones it accepted; the cache is saved, and `ClearCache` empties it. Both are `false` by default.
+- Stopping a transaction while offline always works.
+- `offline` is not remembered across `stop` and `start`.
+
+**Answers that are errors.** A `StartTransaction`, `StopTransaction` or `MeterValues` that the CSMS answers with an error is sent again after `TransactionMessageRetryInterval` seconds (default 60) times the number of attempts so far, up to `TransactionMessageAttempts` attempts (default 3), and is then dropped. Messages behind it wait, so their order is kept. An answer to `StartTransaction` that cannot be read counts as an error. Other messages are not sent again.
+
+**Reboot.** `exec <charger> reboot` does what a soft reset does, with reason `Reboot`.
 
 ### Time
 
@@ -357,6 +402,7 @@ Saved per charger:
 - Connector status and the open transaction, if any
 - Messages queued while offline
 - Authorization cache, if enabled
+- Faults, and connectors the CSMS made unavailable
 
 A CSMS password is never saved. It is read again from where it came from whenever a site starts: the site file for a site, and the `PLUGYARD_CSMS_PASSWORD` environment variable for a charger started with `plugyard run`.
 

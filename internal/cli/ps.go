@@ -82,8 +82,12 @@ func writePsTable(w io.Writer, chargers []control.ChargerState) {
 	for _, c := range chargers {
 		var plainParts, coloredParts []string
 		for _, k := range c.Connectors {
-			plainParts = append(plainParts, fmt.Sprintf("%d:%s", k.ID, k.Status))
-			coloredParts = append(coloredParts, fmt.Sprintf("%d:%s", k.ID, p.status(k.Status)))
+			detail := ""
+			if k.ErrorCode != "" {
+				detail = "(" + k.ErrorCode + ")"
+			}
+			plainParts = append(plainParts, fmt.Sprintf("%d:%s%s", k.ID, k.Status, detail))
+			coloredParts = append(coloredParts, fmt.Sprintf("%d:%s", k.ID, p.status(k.Status+detail)))
 		}
 		rows = append(rows, []cell{
 			plain(c.ChargePointID),

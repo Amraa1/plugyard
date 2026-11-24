@@ -4,14 +4,18 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
+	"github.com/Amraa1/plugyard/internal/charger"
 	"github.com/Amraa1/plugyard/internal/control"
 	"github.com/Amraa1/plugyard/internal/ev"
 	"github.com/Amraa1/plugyard/internal/model"
+	"github.com/Amraa1/plugyard/internal/ocpp/v16"
 )
 
 func newExec() *cobra.Command {
@@ -25,6 +29,9 @@ func newExec() *cobra.Command {
 		targetSoC string
 		curve     string
 		preset    string
+		info      string
+		vendor    string
+		duration  time.Duration
 	)
 
 	cmd := &cobra.Command{
@@ -33,13 +40,29 @@ func newExec() *cobra.Command {
 		Long: "Run an action on one charger, named by its charge point ID or its name, or\n" +
 			"on every charger matching a pattern such as 'FAST-*'. One line is printed per charger saying whether the action was\n" +
 			"carried out and, if not, why.\n\n" +
-			"Actions:\n" +
-			"  plug           Plug an EV into the connector\n" +
-			"  unplug         Remove the EV\n" +
-			"  tap <idTag>    Present a tag: authorize it, then start or stop the transaction",
+			"Actions for a driver:\n" +
+			"  plug                Plug an EV into the connector\n" +
+			"  unplug              Remove the EV\n" +
+			"  tap <idTag>         Present a tag: authorize it, then start or stop the transaction\n\n" +
+			"Actions for testing what goes wrong:\n" +
+			"  fault <errorCode>   Report a fault, as real hardware does; a transaction there ends\n" +
+			"  clear               Recover from the fault\n" +
+			"  offline             Take the network connection down; the charger keeps running\n" +
+			"  online              Restore the network connection\n" +
+			"  reboot              Reboot the charger\n\n" +
+			"Error codes for fault: " + strings.Join(v16.ErrorCodes[:8], ", ") + ",\n" +
+			"  " + strings.Join(v16.ErrorCodes[8:], ", ") + "\n\n" +
+			"fault and clear act on connector 1 unless -n says otherwise; -n 0 means the\n" +
+			"charger as a whole. While offline the charger queues what it has to tell the\n" +
+			"CSMS, and sends it in order once it is back.",
 		Example: "  plugyard exec CP-1 plug --soc 30% --battery 82kWh\n" +
 			"  plugyard exec CP-1 tap 04A1B2C3\n" +
-			"  plugyard exec 'FAST-*' unplug -n 2",
+			"  plugyard exec 'FAST-*' unplug -n 2\n" +
+			"  plugyard exec CP-1 fault GroundFailure\n" +
+			"  plugyard exec CP-1 fault OverCurrentFailure -n 2 --info \"phase L2\"\n" +
+			"  plugyard exec CP-1 clear\n" +
+			"  plugyard exec 'FAST-*' offline --for 30s\n" +
+			"  plugyard exec CP-1 reboot",
 		Args: cobra.MinimumNArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := checkFormat(format); err != nil {
@@ -49,11 +72,15 @@ func newExec() *cobra.Command {
 			if err := checkPattern(pattern); err != nil {
 				return err
 			}
-			if connector < 1 {
+			onCharger := action == control.ActionFault || action == control.ActionClear
+			switch {
+			case control.WholeCharger(action) && cmd.Flags().Changed("connector"):
+				return &UsageError{Err: fmt.Errorf("%s acts on the whole charger, so it takes no --connector", action)}
+			case connector < 0, connector == 0 && !onCharger:
 				return &UsageError{Err: errors.New("the connector number must be 1 or more")}
 			}
 
-			req := control.ExecRequest{Action: action, Connector: connector}
+			req := control.ExecRequest{Action: action, Connector: connector, For: duration}
 			evFlagsGiven := battery != "" || soc != "" || maxPower != "" || targetSoC != "" || curve != "" || preset != ""
 
 			wantArgs := func(n int, what string) error {
@@ -83,8 +110,31 @@ func newExec() *cobra.Command {
 					return err
 				}
 				req.Tag = rest[0]
+			case control.ActionFault:
+				if err := wantArgs(1, "exactly one argument, the error code: "+strings.Join(v16.ErrorCodes, ", ")); err != nil {
+					return err
+				}
+				if !slices.Contains(v16.ErrorCodes, rest[0]) {
+					return &UsageError{Err: fmt.Errorf("unknown error code %q: OCPP 1.6 has %s", rest[0], strings.Join(v16.ErrorCodes, ", "))}
+				}
+				req.Fault = charger.Fault{Code: rest[0], Info: info, VendorCode: vendor}
+			case control.ActionClear, control.ActionOnline, control.ActionReboot, control.ActionOffline:
+				if err := wantArgs(0, "no arguments"); err != nil {
+					return err
+				}
 			default:
-				return &UsageError{Err: fmt.Errorf("unknown action %q: want plug, unplug or tap", action)}
+				return &UsageError{Err: fmt.Errorf("unknown action %q: want plug, unplug, tap, fault, clear, offline, online or reboot", action)}
+			}
+			if (info != "" || vendor != "") && action != control.ActionFault {
+				return &UsageError{Err: errors.New("--info and --vendor-code only apply to fault")}
+			}
+			if cmd.Flags().Changed("for") {
+				if action != control.ActionOffline {
+					return &UsageError{Err: errors.New("--for only applies to offline")}
+				}
+				if duration <= 0 {
+					return &UsageError{Err: errors.New("--for must be a time above zero, such as 30s")}
+				}
 			}
 			if evFlagsGiven && action != control.ActionPlug {
 				return &UsageError{Err: errors.New("--ev, --battery, --soc, --max-power, --target-soc and --curve only apply to plug")}
@@ -135,7 +185,7 @@ func newExec() *cobra.Command {
 					for _, id := range t.ids {
 						got = append(got, control.ExecResult{
 							ChargePointID: id,
-							Connector:     connector,
+							Connector:     req.Connector,
 							Message:       fmt.Sprintf("site %q did not answer: %v", t.client.Info.Site, err),
 						})
 					}
@@ -176,6 +226,9 @@ func newExec() *cobra.Command {
 	flags.StringVar(&targetSoC, "target-soc", "", "plug: state of charge at which the EV stops, such as 80% (default 100%)")
 	flags.StringVar(&curve, "curve", "", "plug: charge curve, "+strings.Join(ev.BuiltinCurveNames(), " or ")+" (default standard)")
 	flags.StringVar(&preset, "ev", "", "plug: EV preset from the site file")
+	flags.StringVar(&info, "info", "", "fault: free text about the fault, sent to the CSMS")
+	flags.StringVar(&vendor, "vendor-code", "", "fault: the vendor's own code for the fault")
+	flags.DurationVar(&duration, "for", 0, "offline: come back online after this long, such as 30s")
 	addFormatFlag(cmd, &format)
 	return cmd
 }

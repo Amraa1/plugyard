@@ -43,6 +43,9 @@ type Model struct {
 	OnEvFull string // OnEvFullStop or OnEvFullSuspend
 	StartOn  string // StartOnTap or StartOnPlug
 	StartTag string // idTag used when StartOn is StartOnPlug
+	// DataTransfer lists the vendor IDs whose DataTransfer requests from the
+	// CSMS the charger accepts.
+	DataTransfer []string
 }
 
 // Connector is a numbered outlet on a charger.
@@ -101,6 +104,8 @@ type file struct {
 	OnEvFull   string          `yaml:"onEvFull"`
 	StartOn    string          `yaml:"startOn"`
 	StartTag   string          `yaml:"startTag"`
+	// DataTransfer lists vendor IDs.
+	DataTransfer []string `yaml:"dataTransfer"`
 }
 
 type fileConnector struct {
@@ -148,6 +153,13 @@ func Parse(data []byte) (*Model, error) {
 		OnEvFull: f.OnEvFull,
 		StartOn:  f.StartOn,
 		StartTag: f.StartTag,
+	}
+	for i, vendor := range f.DataTransfer {
+		if vendor = strings.TrimSpace(vendor); vendor == "" {
+			problem("dataTransfer[%d]: the vendor ID is empty", i)
+		} else {
+			m.DataTransfer = append(m.DataTransfer, vendor)
+		}
 	}
 
 	requireText := func(field, value string, max int) {

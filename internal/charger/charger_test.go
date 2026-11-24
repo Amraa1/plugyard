@@ -82,6 +82,7 @@ func powerOn(t *testing.T, cfg charger.Config) *running {
 		ReconnectMin: 10 * time.Millisecond,
 		ReconnectMax: 50 * time.Millisecond,
 		Tick:         10 * time.Millisecond,
+		Reboot:       20 * time.Millisecond,
 	}
 
 	c, err := charger.New(cfg)
@@ -310,5 +311,14 @@ func TestNewRejectsBadConfig(t *testing.T) {
 				t.Error("New succeeded, want an error")
 			}
 		})
+	}
+}
+
+// dump prints the log, for working out why a test failed.
+func (l *logBook) dump(t *testing.T) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for _, e := range l.entries {
+		t.Logf("%s %d %s", e.Time.Format("15:04:05.000"), e.Kind, e.Text)
 	}
 }

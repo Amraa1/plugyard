@@ -26,6 +26,13 @@ type State struct {
 	// Outbox holds the messages still owed to the CSMS, in order.
 	Outbox    []QueuedMessage `json:"outbox,omitempty"`
 	NextTxRef int             `json:"nextTxRef,omitempty"`
+	// Fault and Inoperative describe the charger as a whole, which OCPP
+	// addresses as connector 0.
+	Fault       *Fault `json:"fault,omitempty"`
+	Inoperative bool   `json:"inoperative,omitempty"`
+	// AuthCache holds what the CSMS said about tags, when the authorization
+	// cache is on.
+	AuthCache map[string]v16.IDTagInfo `json:"authCache,omitempty"`
 }
 
 // ConnectorState is the saved state of one connector.
@@ -35,6 +42,10 @@ type ConnectorState struct {
 	// EV is the EV plugged in, or nil.
 	EV        *ev.State `json:"ev,omitempty"`
 	Finishing bool      `json:"finishing,omitempty"`
+	// Fault is the fault the connector has, or nil.
+	Fault *Fault `json:"fault,omitempty"`
+	// Inoperative says the CSMS has made the connector unavailable.
+	Inoperative bool `json:"inoperative,omitempty"`
 	// Tx is the open transaction, or nil. A charger that starts with one was
 	// not shut down in an orderly way.
 	Tx *TxState `json:"tx,omitempty"`
@@ -66,6 +77,14 @@ type QueuedMessage struct {
 // state describes a charger that has never run.
 func (s *State) Snapshot(chargePointID string, m *model.Model) Snapshot {
 	snap := Snapshot{ChargePointID: chargePointID, Connection: Stopped}
+	if s != nil {
+		switch {
+		case s.Fault != nil:
+			snap.Connectors = append(snap.Connectors, ConnectorSnapshot{Status: v16.StatusFaulted, ErrorCode: s.Fault.Code})
+		case s.Inoperative:
+			snap.Connectors = append(snap.Connectors, ConnectorSnapshot{Status: v16.StatusUnavailable})
+		}
+	}
 	for _, mc := range m.Connectors {
 		ks := ConnectorSnapshot{ID: mc.ID, Status: v16.StatusAvailable}
 		if s != nil {
@@ -77,11 +96,17 @@ func (s *State) Snapshot(chargePointID string, m *model.Model) Snapshot {
 				if saved.EV != nil {
 					soc := saved.EV.SoC
 					ks.SoC = &soc
+				}
+				// An open transaction ends when the charger starts.
+				switch {
+				case saved.Fault != nil:
+					ks.Status, ks.ErrorCode = v16.StatusFaulted, saved.Fault.Code
+				case saved.Inoperative:
+					ks.Status = v16.StatusUnavailable
+				case saved.EV != nil && (saved.Finishing || saved.Tx != nil):
+					ks.Status = v16.StatusFinishing
+				case saved.EV != nil:
 					ks.Status = v16.StatusPreparing
-					// An open transaction ends when the charger starts.
-					if saved.Finishing || saved.Tx != nil {
-						ks.Status = v16.StatusFinishing
-					}
 				}
 			}
 		}
@@ -92,7 +117,13 @@ func (s *State) Snapshot(chargePointID string, m *model.Model) Snapshot {
 
 // state returns the charger's state as of now. The caller holds c.mu.
 func (c *Charger) state(now time.Time) State {
-	st := State{SavedAt: now, NextTxRef: c.nextTxRef}
+	st := State{SavedAt: now, NextTxRef: c.nextTxRef, Fault: c.zero.fault, Inoperative: c.zero.inoperative}
+	if len(c.authCache) > 0 {
+		st.AuthCache = make(map[string]v16.IDTagInfo, len(c.authCache))
+		for tag, info := range c.authCache {
+			st.AuthCache[tag] = info
+		}
+	}
 	if len(c.overrides) > 0 {
 		st.Config = make(map[string]string, len(c.overrides))
 		for key, value := range c.overrides {
@@ -101,7 +132,9 @@ func (c *Charger) state(now time.Time) State {
 	}
 	for _, k := range c.connectors {
 		c.advance(k, now)
-		ks := ConnectorState{ID: k.id, MeterWh: k.meterWh, Finishing: k.finishing}
+		// A connector due to become unavailable when its transaction ends
+		// is saved as unavailable: the transaction does not outlive a stop.
+		ks := ConnectorState{ID: k.id, MeterWh: k.meterWh, Finishing: k.finishing, Fault: k.fault, Inoperative: k.inoperative || k.scheduled}
 		if k.ev != nil {
 			evState := k.ev.State()
 			ks.EV = &evState
@@ -135,6 +168,11 @@ func (c *Charger) state(now time.Time) State {
 // charger is powered on.
 func (c *Charger) restore(st *State) {
 	c.nextTxRef = st.NextTxRef
+	c.zero.fault, c.zero.inoperative = st.Fault, st.Inoperative
+	c.zero.status, c.zero.code = c.zero.currentStatus(), c.zero.errorCode()
+	for tag, info := range st.AuthCache {
+		c.authCache[tag] = info
+	}
 	for key, value := range st.Config {
 		c.overrides[key] = value
 		c.config[key] = value
@@ -165,6 +203,7 @@ func (c *Charger) restore(st *State) {
 		}
 		k.meterWh = ks.MeterWh
 		k.finishing = ks.Finishing
+		k.fault, k.inoperative = ks.Fault, ks.Inoperative
 		if ks.EV != nil {
 			k.ev = ev.Restore(*ks.EV)
 		}
@@ -202,7 +241,7 @@ func (c *Charger) restore(st *State) {
 				c.recovered = append(c.recovered, fmt.Sprintf("connector %d: a transaction was cut short by a power loss", k.id))
 			}
 		}
-		k.status = k.currentStatus()
+		k.status, k.code = k.currentStatus(), k.errorCode()
 	}
 }
 
