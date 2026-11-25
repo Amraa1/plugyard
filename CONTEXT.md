@@ -88,3 +88,7 @@ _Avoid_: REST API (it is not a full one), control API, remote control (a remote 
 The secret a caller of the API sends to show it may call, known by a name that the log of calls shows.
 _Avoid_: Token alone where a tag could be meant, key, password, credential
 
+**Tool**:
+One reading or one action of the API as an AI agent calls it, over the Model Context Protocol (MCP). A tool either reads chargers or acts on them.
+_Avoid_: Function, command (a command is typed on the command line), endpoint
+

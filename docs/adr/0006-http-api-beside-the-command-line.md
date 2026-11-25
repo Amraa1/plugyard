@@ -22,4 +22,4 @@ We chose this because of how plugyard came to be used: on a staging server, for 
 - **A web page in a browser cannot act through it.** An API on localhost with no token would otherwise let any website a developer visits unplug a charger. A call must name this machine as its host, must not come from a page of another origin, and an action must say that its body is JSON.
 - **Encryption is optional**, with `--tls-cert` and `--tls-key`, since the usual place for it is a reverse proxy in front.
 - **The address scheme is versioned**, `/v1/...`, and described by an OpenAPI document that `plugyard api spec` prints and the tests hold to the server.
-- An MCP server and a Docker image are to follow, on top of this.
+- An MCP server and a Docker image are to follow, on top of this. (The MCP tools came with ADR 0007.)

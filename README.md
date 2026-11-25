@@ -378,6 +378,8 @@ This installs the [plugyard skill](skills/plugyard/SKILL.md) with the [skills to
 
 **Or just tell it.** An agent that has no skill needs one sentence: "use plugyard; run `plugyard agents` first". That command prints a guide written for agents, matching the version you have installed. The same guide is [`llms.txt`](llms.txt).
 
+**Is plugyard on a server, and the agent on your machine?** Then the agent uses plugyard's tools over the network: see [Tools for an AI agent](#tools-for-an-ai-agent-mcp) below.
+
 ## From another machine: the API
 
 On a shared server, the people who need a charger to do something often have no shell there: the app team wants to plug an EV in, the dashboard team wants to see a fault. The API gives them the actions of `plugyard exec` over HTTP.
@@ -410,6 +412,22 @@ curl -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/jso
 - `plugyard api spec` prints the full description as an OpenAPI document, and `plugyard api down` stops the API.
 
 The details are in [docs/SPEC.md](docs/SPEC.md), section 14.
+
+### Tools for an AI agent (MCP)
+
+The API also serves its reading and actions as tools for AI agents, over the Model Context Protocol, at `/mcp`. An agent on your machine can then plug in, tap, cause a fault, wait for a state and read the log of chargers that run on a server. In Claude Code:
+
+```sh
+claude mcp add --transport http plugyard https://plugyard.example.com/mcp \
+       --header "Authorization: Bearer $TOKEN"
+```
+
+Then ask for what you want: "plug an EV into FAST-1, start a session with tag 04A1B2C3, and tell me what the CSMS answered".
+
+- **Nothing more to start**: `plugyard api up` serves the tools, with the same tokens and the same rules. `plugyard api status` shows the address.
+- **Give the agent a token of its own**, limited to a site if it should stay there. `plugyard api logs` then shows what the agent did.
+- **A `--read-only` token gets the tools that read** (`list_chargers`, `inspect_charger`, `wait_for_state`, `read_logs`) and none that act.
+- **The tools that act** are `plug`, `unplug`, `tap`, `fault`, `clear_fault`, `go_offline`, `go_online`, `reboot` and `fail_next`. They cannot start or remove chargers.
 
 ## In a container
 

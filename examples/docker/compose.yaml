@@ -1,5 +1,5 @@
 # plugyard on a server: the chargers of the site file in this folder, and the
-# API for those who have no shell here.
+# API for those who have no shell here. AI agents use its tools at /mcp.
 #
 # Before the first start, make a token, since the API is to be reached from
 # other machines and refuses to listen for them without one:
