@@ -34,6 +34,8 @@ type fakeBackend struct {
 	mu    sync.Mutex
 	sites []string
 	execs []Action
+	waits []Wait
+	logs  []LogQuery
 	fail  bool
 	err   error
 }
@@ -68,6 +70,39 @@ func (b *fakeBackend) Exec(_ context.Context, site, charger string, action Actio
 		return nil, b.err
 	}
 	return []control.ExecResult{{ChargePointID: charger, Connector: 1, OK: !b.fail, Message: "done"}}, nil
+}
+
+func (b *fakeBackend) Wait(ctx context.Context, site, charger string, wait Wait) ([]Waited, error) {
+	b.note(site)
+	b.mu.Lock()
+	b.waits = append(b.waits, wait)
+	b.mu.Unlock()
+	if b.err != nil {
+		return nil, b.err
+	}
+	if wait.State == "never" {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(wait.Timeout):
+		}
+	}
+	c := Waited{Site: "yard", ChargePointID: charger, Connector: 1, State: "Available", Reached: wait.State == "Available"}
+	return []Waited{c}, nil
+}
+
+func (b *fakeBackend) Logs(_ context.Context, site, charger string, query LogQuery) ([]LogLine, error) {
+	b.note(site)
+	b.mu.Lock()
+	b.logs = append(b.logs, query)
+	b.mu.Unlock()
+	if b.err != nil {
+		return nil, b.err
+	}
+	if charger == "CP-0" {
+		return nil, nil
+	}
+	return []LogLine{{Time: "2026-01-02T15:04:05.000Z", ChargePointID: charger, Kind: "event", Text: "EV plugged in"}}, nil
 }
 
 // dataDir returns a data directory with a short path, as sockets need.
@@ -467,11 +502,142 @@ func TestServingHTTPS(t *testing.T) {
 	}
 }
 
+func TestWaitingAndReadingTheLog(t *testing.T) {
+	backend := &fakeBackend{}
+	s := serve(t, Config{DataDir: dataDir(t), Backend: backend})
+
+	// A state that is reached, and one that is not: both are answers.
+	status, body := call(t, s, "GET", "/v1/chargers/CP-1/wait?state=Available&connector=1&timeout=2s", "", "")
+	if status != 200 || body != `{"chargers":[{"site":"yard","chargePointId":"CP-1","connector":1,"state":"Available","reached":true}],"reached":true}` {
+		t.Errorf("a wait that is reached = %d %s", status, body)
+	}
+	if got := backend.waits[0]; got.State != "Available" || got.Connector == nil || *got.Connector != 1 || got.Timeout != 2*time.Second {
+		t.Errorf("the backend was asked to wait for %+v", got)
+	}
+	status, body = call(t, s, "GET", "/v1/chargers/CP-1/wait?state=Charging", "", "")
+	if status != 200 || !strings.Contains(body, `"state":"Available","reached":false}],"reached":false}`) {
+		t.Errorf("a wait that is not reached = %d %s", status, body)
+	}
+	if got := backend.waits[1]; got.Connector != nil || got.Timeout != DefaultWaitTimeout {
+		t.Errorf("a wait with nothing said waits for %+v", got)
+	}
+
+	status, body = call(t, s, "GET", "/v1/chargers/CP-1/logs?since=10m&tail=5&events=true", "", "")
+	if status != 200 || body != `{"lines":[{"time":"2026-01-02T15:04:05.000Z","chargePointId":"CP-1","kind":"event","text":"EV plugged in"}]}` {
+		t.Errorf("the log = %d %s", status, body)
+	}
+	if got := backend.logs[0]; got != (LogQuery{Since: "10m", Tail: 5, Events: true}) {
+		t.Errorf("the backend was asked for the log with %+v", got)
+	}
+	// No lines is an empty list, and the last lines are a bounded number.
+	if status, body := call(t, s, "GET", "/v1/chargers/CP-0/logs", "", ""); status != 200 || body != `{"lines":[]}` {
+		t.Errorf("a log without lines = %d %s", status, body)
+	}
+	if got := backend.logs[1]; got != (LogQuery{Tail: DefaultLogTail}) {
+		t.Errorf("a log with nothing said is asked for with %+v", got)
+	}
+
+	for path, want := range map[string]string{
+		"/v1/chargers/CP-1/wait":                            `wait needs \"state\"`,
+		"/v1/chargers/CP-1/wait?state=Charging&connector=0": "the connector number must be 1 or more",
+		"/v1/chargers/CP-1/wait?state=Charging&timeout=0":   "timeout must be a time above zero and at most 5m0s",
+		"/v1/chargers/CP-1/wait?state=Charging&timeout=6m":  "to wait longer, call again",
+		"/v1/chargers/CP-1/wait?state=Charging&timout=6m":   `wait does not take \"timout\": it takes state, connector, timeout, site`,
+		"/v1/chargers/CP-1/wait?state=Charging&tail=1":      `wait does not take \"tail\"`,
+		"/v1/chargers/CP-1/logs?tail=-1":                    "tail must be a number from 0 to 5000",
+		"/v1/chargers/CP-1/logs?tail=5001":                  "tail must be a number from 0 to 5000",
+		"/v1/chargers/CP-1/logs?events=some":                "events must be true or false",
+		"/v1/chargers/CP-1/logs?state=Charging":             `logs does not take \"state\": it takes since, tail, events, site`,
+	} {
+		if status, body := call(t, s, "GET", path, "", ""); status != 400 || !strings.Contains(body, want) {
+			t.Errorf("GET %s = %d %s, want 400 and %s", path, status, body, want)
+		}
+	}
+
+	// A read-only token may wait and read the log, a token limited to a
+	// site does so in that site only, and both calls are recorded.
+	reader, _ := CreateToken(s.cfg.DataDir, "dashboard", "depot", true)
+	for _, path := range []string{"/v1/chargers/CP-1/wait?state=Available", "/v1/chargers/CP-1/logs"} {
+		if status, body := call(t, s, "GET", path, reader, ""); status != 200 {
+			t.Errorf("GET %s with a read-only token = %d %s", path, status, body)
+		}
+		if status, body := call(t, s, "GET", path, "", ""); status != 401 {
+			t.Errorf("GET %s without a token = %d %s", path, status, body)
+		}
+		at := path + "?site=yard"
+		if strings.Contains(path, "?") {
+			at = path + "&site=yard"
+		}
+		if status, body := call(t, s, "GET", at, reader, ""); status != 403 || !strings.Contains(body, "token dashboard is limited to site depot") {
+			t.Errorf("GET %s for another site = %d %s", at, status, body)
+		}
+	}
+	if got := backend.sites[len(backend.sites)-1]; got != "depot" {
+		t.Errorf("the backend was asked about site %q, want depot", got)
+	}
+	entries, _ := ReadLog(s.cfg.DataDir)
+	var lines []string
+	for _, e := range entries {
+		lines = append(lines, e.Line()[strings.Index(e.Line(), " ")+1:])
+	}
+	log := strings.Join(lines, "\n")
+	for _, want := range []string{
+		"local 127.0.0.1 200 wait CP-1: Available",
+		"local 127.0.0.1 200 wait CP-1: not Charging after 30s",
+		"local 127.0.0.1 200 logs CP-1",
+		"local 127.0.0.1 400 wait CP-1: timeout must be",
+		"dashboard 127.0.0.1 200 logs CP-1",
+		"- 127.0.0.1 401 wait CP-1: a token is needed",
+	} {
+		if !strings.Contains(log, want) {
+			t.Errorf("the log of calls lacks %q:\n%s", want, log)
+		}
+	}
+}
+
+// A wait that is still going on ends when the API stops, and does not hold
+// the stop up.
+func TestStoppingEndsAWait(t *testing.T) {
+	s := serve(t, Config{DataDir: dataDir(t)})
+	type result struct {
+		status int
+		body   string
+	}
+	done := make(chan result, 1)
+	go func() {
+		req, _ := http.NewRequest("GET", s.Info().URL()+"/v1/chargers/CP-1/wait?state=never&timeout=1m", nil)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			done <- result{0, err.Error()}
+			return
+		}
+		defer resp.Body.Close()
+		data, _ := io.ReadAll(resp.Body)
+		done <- result{resp.StatusCode, string(data)}
+	}()
+	time.Sleep(200 * time.Millisecond)
+	start := time.Now()
+	s.Close()
+	if took := time.Since(start); took > 3*time.Second {
+		t.Errorf("stopping the API took %s with a wait going on", took)
+	}
+	select {
+	case r := <-done:
+		if r.status != http.StatusServiceUnavailable || !strings.Contains(r.body, "the wait ended early") {
+			t.Errorf("the wait ended with %d %s", r.status, r.body)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the wait went on after the API stopped")
+	}
+}
+
 // The description says what the server does, and no more.
 func TestTheDescriptionMatchesTheServer(t *testing.T) {
 	var doc struct {
 		Paths map[string]map[string]struct {
 			Parameters []struct {
+				Ref    string `json:"$ref"`
+				In     string `json:"in"`
 				Name   string `json:"name"`
 				Schema struct {
 					Enum []string `json:"enum"`
@@ -495,7 +661,10 @@ func TestTheDescriptionMatchesTheServer(t *testing.T) {
 		}
 	}
 	sort.Strings(described)
-	want := []string{"GET /v1/chargers", "GET /v1/chargers/{charger}", "GET /v1/openapi.json", "POST /v1/chargers/{charger}/{action}"}
+	want := []string{
+		"GET /v1/chargers", "GET /v1/chargers/{charger}", "GET /v1/chargers/{charger}/logs", "GET /v1/chargers/{charger}/wait",
+		"GET /v1/openapi.json", "POST /v1/chargers/{charger}/{action}",
+	}
 	if strings.Join(described, "; ") != strings.Join(want, "; ") {
 		t.Errorf("the description has %v, want %v", described, want)
 	}
@@ -504,8 +673,28 @@ func TestTheDescriptionMatchesTheServer(t *testing.T) {
 	for _, route := range want {
 		method, path, _ := strings.Cut(route, " ")
 		path = strings.NewReplacer("{charger}", "CP-1", "{action}", "reboot").Replace(path)
+		if strings.HasSuffix(path, "/wait") {
+			path += "?state=Available"
+		}
 		if status, _ := call(t, s, method, path, "", "{}"); status != 200 {
 			t.Errorf("%s %s = %d", method, path, status)
+		}
+	}
+
+	// The parameters of waiting and of reading the log are those the
+	// server takes.
+	for path, takes := range map[string][]string{
+		"/v1/chargers/{charger}/wait": waitTakes,
+		"/v1/chargers/{charger}/logs": logsTakes,
+	} {
+		var named []string
+		for _, p := range doc.Paths[path]["get"].Parameters {
+			if p.In == "query" {
+				named = append(named, p.Name)
+			}
+		}
+		if strings.Join(named, ",") != strings.Join(takes, ",") {
+			t.Errorf("the description of %s has the parameters %v, the server takes %v", path, named, takes)
 		}
 	}
 

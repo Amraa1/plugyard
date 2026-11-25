@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -310,6 +311,139 @@ func TestAPIBeyondThisMachineAndItsDescription(t *testing.T) {
 	for _, args := range [][]string{{"api", "serve"}, {"api", "token", "show"}, {"api", "logs", "extra"}, {"api", "token", "rm"}} {
 		if code, _, stderr := run(args...); code != ExitUsage || stderr == "" {
 			t.Errorf("%v: exit %d", args, code)
+		}
+	}
+}
+
+func TestAPIWaitsAndReadsTheLogLikeTheCommands(t *testing.T) {
+	useTempDataDir(t)
+	csms := csmstest.Start(t)
+	startRun(t, csms, "CP-1")
+	startRun(t, csms, "CP-2")
+	base := apiUp(t)
+
+	type waited struct {
+		Reached  bool         `json:"reached"`
+		Chargers []api.Waited `json:"chargers"`
+	}
+	wait := func(path string) waited {
+		t.Helper()
+		status, body := apiCall(t, base, "GET", path, "", "")
+		var got waited
+		if err := json.Unmarshal([]byte(body), &got); status != 200 || err != nil {
+			t.Fatalf("GET %s = %d %s", path, status, body)
+		}
+		return got
+	}
+
+	// A state the charger is in already is reached at once, whatever the
+	// case it is written in.
+	got := wait("/v1/chargers/cp-1/wait?state=available")
+	if !got.Reached || len(got.Chargers) != 1 || got.Chargers[0].ChargePointID != "CP-1" || got.Chargers[0].Connector != 1 || got.Chargers[0].State != v16.StatusAvailable {
+		t.Errorf("a wait for Available = %+v", got)
+	}
+	if got := wait("/v1/chargers/CP-*/wait?state=online"); !got.Reached || len(got.Chargers) != 2 || got.Chargers[1].Connector != 0 || got.Chargers[1].State != "online" {
+		t.Errorf("a wait for online = %+v", got)
+	}
+
+	// A state that comes later: the call is answered when it does.
+	done := make(chan waited, 1)
+	go func() { done <- wait("/v1/chargers/CP-*/wait?state=Charging&timeout=8s") }()
+	apiCall(t, base, "POST", "/v1/chargers/CP-*/plug", "", "{}")
+	apiCall(t, base, "POST", "/v1/chargers/CP-1/tap", "", `{"tag":"TAG-1"}`)
+	select {
+	case got := <-done:
+		t.Fatalf("the wait was answered before CP-2 was charging: %+v", got)
+	case <-time.After(300 * time.Millisecond):
+	}
+	apiCall(t, base, "POST", "/v1/chargers/CP-2/tap", "", `{"tag":"TAG-2"}`)
+	select {
+	case got := <-done:
+		if !got.Reached || len(got.Chargers) != 2 || got.Chargers[1].State != v16.StatusCharging {
+			t.Errorf("a wait for Charging = %+v", got)
+		}
+	case <-time.After(8 * time.Second):
+		t.Fatal("the wait was not answered once both chargers were charging")
+	}
+
+	// A state that does not come is an answer too, and says where each
+	// charger is.
+	apiCall(t, base, "POST", "/v1/chargers/CP-2/tap", "", `{"tag":"TAG-2"}`)
+	wait("/v1/chargers/CP-2/wait?state=Finishing")
+	start := time.Now()
+	got = wait("/v1/chargers/CP-*/wait?state=Charging&timeout=300ms")
+	if got.Reached || len(got.Chargers) != 2 || !got.Chargers[0].Reached || got.Chargers[1].Reached || got.Chargers[1].State != v16.StatusFinishing {
+		t.Errorf("a wait that runs out = %+v", got)
+	}
+	if took := time.Since(start); took < 300*time.Millisecond || took > 5*time.Second {
+		t.Errorf("a wait with a timeout of 300ms took %s", took)
+	}
+
+	// A stopped charger is "stopped", and has no connector status.
+	mustRun(t, "stop", "CP-2")
+	if got := wait("/v1/chargers/CP-2/wait?state=stopped&timeout=8s"); !got.Reached || got.Chargers[0].Connector != 0 {
+		t.Errorf("a wait for stopped = %+v", got)
+	}
+	if got := wait("/v1/chargers/CP-2/wait?state=Available&timeout=200ms"); got.Reached || got.Chargers[0].State != "stopped" || got.Chargers[0].Connector != 0 {
+		t.Errorf("a wait for a connector of a stopped charger = %+v", got)
+	}
+
+	// The log is the one the command prints, also of a stopped charger.
+	lines := func(path string) []string {
+		t.Helper()
+		status, body := apiCall(t, base, "GET", path, "", "")
+		var got struct {
+			Lines []json.RawMessage `json:"lines"`
+		}
+		if err := json.Unmarshal([]byte(body), &got); status != 200 || err != nil || got.Lines == nil {
+			t.Fatalf("GET %s = %d %s", path, status, body)
+		}
+		var out []string
+		for _, l := range got.Lines {
+			out = append(out, string(l))
+		}
+		return out
+	}
+	want := strings.Split(strings.TrimSpace(mustRun(t, "logs", "CP-2", "--events", "--format", "json")), "\n")
+	if got := lines("/v1/chargers/CP-2/logs?events=true"); strings.Join(got, "\n") != strings.Join(want, "\n") || len(got) < 3 {
+		t.Errorf("the events of CP-2 through the API:\n%s\nand from the command:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+	if got := lines("/v1/chargers/CP-2/logs?events=true&tail=2&since=1h"); strings.Join(got, "\n") != strings.Join(want[len(want)-2:], "\n") {
+		t.Errorf("the last two events of CP-2 = %v", got)
+	}
+	if got := lines("/v1/chargers/CP-2/logs?since=2099-01-01"); len(got) != 0 {
+		t.Errorf("the log from a time yet to come = %v", got)
+	}
+	all := strings.Join(lines("/v1/chargers/CP-*/logs"), "\n")
+	for _, want := range []string{`"chargePointId":"CP-1"`, `"chargePointId":"CP-2"`, `"kind":"sent"`, `"kind":"received"`, `"message":[2,`} {
+		if !strings.Contains(all, want) {
+			t.Errorf("the log of both chargers lacks %s", want)
+		}
+	}
+
+	for path, want := range map[string]string{
+		"/v1/chargers/CP-1/wait?state=Sleeping":              `400 {"error":"unknown state \"Sleeping\": want a connector status (Available, `,
+		"/v1/chargers/CP-1/wait?state=Reserved":              `400 {"error":"unknown state`,
+		"/v1/chargers/CP-9/wait?state=Available":             `404 {"error":"no charger matches \"CP-9\""}`,
+		"/v1/chargers/CP-%5B/wait?state=Available":           `400 {"error":"invalid charger pattern`,
+		"/v1/chargers/CP-1/wait?state=Available&connector=2": `400 {"error":"charger CP-1 has no connector 2"}`,
+		"/v1/chargers/CP-1/wait?state=online&connector=1":    `400 {"error":"online is a state of the whole charger, so it takes no connector"}`,
+		"/v1/chargers/CP-1/wait?state=online&site=nowhere":   `404 {"error":"no site is named \"nowhere\""}`,
+		"/v1/chargers/CP-9/logs":                             `404 {"error":"no charger matches \"CP-9\""}`,
+		"/v1/chargers/CP-1/logs?since=yesterday":             `400 {"error":"invalid since \"yesterday\": want how long ago`,
+		"/v1/chargers/CP-1/logs?since=-5m":                   `400 {"error":"since cannot be negative"}`,
+	} {
+		status, body := apiCall(t, base, "GET", path, "", "")
+		if got := strconv.Itoa(status) + " " + body; !strings.HasPrefix(got, want) {
+			t.Errorf("GET %s = %s\nwant %s", path, got, want)
+		}
+	}
+
+	// The calls are in the log of the API, with how each wait ended.
+	log := mustRun(t, "api", "logs")
+	for _, want := range []string{" 200 wait CP-1,CP-2: Charging\n", " 200 wait CP-1,CP-2: not Charging after 300ms\n", " 200 logs CP-2\n", " 404 wait CP-9: no charger matches"} {
+		if !strings.Contains(log, want) {
+			t.Errorf("api logs lacks %q:\n%s", want, log)
 		}
 	}
 }

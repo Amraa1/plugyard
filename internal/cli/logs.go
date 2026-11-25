@@ -14,6 +14,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/Amraa1/plugyard/internal/api"
 	"github.com/Amraa1/plugyard/internal/charger"
 	"github.com/Amraa1/plugyard/internal/control"
 	"github.com/Amraa1/plugyard/internal/logfile"
@@ -75,31 +76,41 @@ func newLogs() *cobra.Command {
 			if err := checkPattern(args[0]); err != nil {
 				return err
 			}
-			w, err := loadWorld(cmd.Context(), siteName)
+			dir, sites, err := logSites(cmd.Context(), siteName, args[0])
 			if err != nil {
 				return err
 			}
-			targets, err := w.match(args[0], nil)
-			w.close()
-			if err != nil {
-				return err
-			}
-			if len(targets) == 0 {
-				return fmt.Errorf("no charger matches %q", args[0])
-			}
-			sites := map[string]map[string]bool{}
-			for _, t := range targets {
-				if sites[t.state.Site] == nil {
-					sites[t.state.Site] = map[string]bool{}
-				}
-				sites[t.state.Site][t.state.ChargePointID] = true
-			}
-			return showLogs(cmd.Context(), cmd.OutOrStdout(), w.dir, sites, opts, since)
+			return showLogs(cmd.Context(), cmd.OutOrStdout(), dir, sites, opts, since)
 		},
 	}
 	addLogFlags(cmd, &opts)
 	cmd.Flags().StringVarP(&siteName, "site", "s", "", "only look at chargers of this site")
 	return cmd
+}
+
+// logSites works out whose log a charger argument asks for: the chargers
+// it names, grouped by the site that keeps their log.
+func logSites(ctx context.Context, siteName, pattern string) (dir string, sites map[string]map[string]bool, err error) {
+	w, err := loadWorld(ctx, siteName)
+	if err != nil {
+		return "", nil, err
+	}
+	targets, err := w.match(pattern, nil)
+	w.close()
+	if err != nil {
+		return "", nil, err
+	}
+	if len(targets) == 0 {
+		return "", nil, &matchError{kind: matchNone, text: fmt.Sprintf("no charger matches %q", pattern)}
+	}
+	sites = map[string]map[string]bool{}
+	for _, t := range targets {
+		if sites[t.state.Site] == nil {
+			sites[t.state.Site] = map[string]bool{}
+		}
+		sites[t.state.Site][t.state.ChargePointID] = true
+	}
+	return w.dir, sites, nil
 }
 
 func newSiteLogs() *cobra.Command {
@@ -149,21 +160,36 @@ func (o logOptions) check() (time.Time, error) {
 	if o.tail < -1 {
 		return time.Time{}, &UsageError{Err: errors.New("--tail must be 0 or more")}
 	}
-	if o.since == "" {
+	since, err := parseSince(o.since)
+	switch {
+	case errors.Is(err, errSinceNegative):
+		return time.Time{}, &UsageError{Err: errors.New("--since cannot be negative")}
+	case err != nil:
+		return time.Time{}, &UsageError{Err: fmt.Errorf("invalid --since %w", err)}
+	}
+	return since, nil
+}
+
+var errSinceNegative = errors.New("cannot be negative")
+
+// parseSince works out the moment a "since" names: how long ago, or a
+// time. Empty stands for no limit, which is the zero time.
+func parseSince(text string) (time.Time, error) {
+	if text == "" {
 		return time.Time{}, nil
 	}
-	if d, err := time.ParseDuration(o.since); err == nil {
+	if d, err := time.ParseDuration(text); err == nil {
 		if d < 0 {
-			return time.Time{}, &UsageError{Err: errors.New("--since cannot be negative")}
+			return time.Time{}, errSinceNegative
 		}
 		return time.Now().Add(-d), nil
 	}
 	for _, layout := range []string{time.RFC3339Nano, "2006-01-02T15:04:05", "2006-01-02"} {
-		if t, err := time.ParseInLocation(layout, o.since, time.Local); err == nil {
+		if t, err := time.ParseInLocation(layout, text, time.Local); err == nil {
 			return t, nil
 		}
 	}
-	return time.Time{}, &UsageError{Err: fmt.Errorf("invalid --since %q: want how long ago, such as 10m or 2h, or a time such as 2026-01-02T15:04:05Z", o.since)}
+	return time.Time{}, fmt.Errorf("%q: want how long ago, such as 10m or 2h, or a time such as 2026-01-02T15:04:05Z", text)
 }
 
 // parseLogLine reads a line as the log printer writes it.
@@ -275,15 +301,20 @@ func (s *logSource) more() []charger.Entry {
 	return append(out, lines...)
 }
 
-// logJSON is a log line as --format json prints it.
-type logJSON struct {
-	Time          string `json:"time"`
-	ChargePointID string `json:"chargePointId"`
-	// Kind is "event", "sent" or "received".
-	Kind string `json:"kind"`
-	Text string `json:"text"`
-	// Message is the OCPP message of a line that is one.
-	Message json.RawMessage `json:"message,omitempty"`
+// logLine is a log line as --format json prints it, and as the API
+// answers with it.
+func logLine(e charger.Entry) api.LogLine {
+	line := api.LogLine{Time: e.Time.Format(logTimeLayout), ChargePointID: e.ChargePointID, Kind: "event", Text: e.Text}
+	if e.Kind != charger.Event {
+		line.Kind = "sent"
+		if e.Kind == charger.MessageReceived {
+			line.Kind = "received"
+		}
+		if json.Valid([]byte(e.Text)) {
+			line.Message = json.RawMessage(e.Text)
+		}
+	}
+	return line
 }
 
 func newLogWriter(out io.Writer, format string) func(charger.Entry) {
@@ -291,45 +322,38 @@ func newLogWriter(out io.Writer, format string) func(charger.Entry) {
 		return newLogPrinter(out)
 	}
 	enc := json.NewEncoder(out)
-	return func(e charger.Entry) {
-		line := logJSON{Time: e.Time.Format(logTimeLayout), ChargePointID: e.ChargePointID, Kind: "event", Text: e.Text}
-		if e.Kind != charger.Event {
-			line.Kind = "sent"
-			if e.Kind == charger.MessageReceived {
-				line.Kind = "received"
-			}
-			if json.Valid([]byte(e.Text)) {
-				line.Message = json.RawMessage(e.Text)
-			}
-		}
-		_ = enc.Encode(line)
-	}
+	return func(e charger.Entry) { _ = enc.Encode(logLine(e)) }
 }
 
-// showLogs prints the log of the given chargers of the given sites, and
-// with --follow keeps printing until no site of them runs any more.
-func showLogs(ctx context.Context, out io.Writer, dir string, sites map[string]map[string]bool, opts logOptions, since time.Time) error {
-	var sources []*logSource
-	exists := false
+// readLogs returns the wanted lines of the log of the given chargers of
+// the given sites, oldest first, and of them the last tail when tail is 0
+// or more. exists says whether any log is there at all. The sources can be
+// read again for what is written later.
+func readLogs(dir string, sites map[string]map[string]bool, events bool, since time.Time, tail int) (sources []*logSource, lines []charger.Entry, exists bool) {
 	for name, ids := range sites {
-		s := &logSource{site: name, path: store.LogPath(dir, name), ids: ids, events: opts.events, since: since}
+		s := &logSource{site: name, path: store.LogPath(dir, name), ids: ids, events: events, since: since}
 		sources = append(sources, s)
 		exists = exists || len(logfile.Paths(s.path)) > 0
 	}
 	sort.Slice(sources, func(i, j int) bool { return sources[i].site < sources[j].site })
-	if !exists {
-		return errors.New("there is no log: the chargers have not run yet, or were started with --rm, which keeps none")
-	}
-
-	var lines []charger.Entry
 	for _, s := range sources {
 		lines = append(lines, s.all()...)
 	}
 	if len(sources) > 1 {
 		sort.SliceStable(lines, func(i, j int) bool { return lines[i].Time.Before(lines[j].Time) })
 	}
-	if opts.tail >= 0 && len(lines) > opts.tail {
-		lines = lines[len(lines)-opts.tail:]
+	if tail >= 0 && len(lines) > tail {
+		lines = lines[len(lines)-tail:]
+	}
+	return sources, lines, exists
+}
+
+// showLogs prints the log of the given chargers of the given sites, and
+// with --follow keeps printing until no site of them runs any more.
+func showLogs(ctx context.Context, out io.Writer, dir string, sites map[string]map[string]bool, opts logOptions, since time.Time) error {
+	sources, lines, exists := readLogs(dir, sites, opts.events, since, opts.tail)
+	if !exists {
+		return errors.New("there is no log: the chargers have not run yet, or were started with --rm, which keeps none")
 	}
 	write := newLogWriter(out, opts.format)
 	for _, e := range lines {

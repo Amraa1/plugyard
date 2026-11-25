@@ -37,6 +37,11 @@ func apiError(err error) error {
 			return api.Errorf(http.StatusNotFound, "%s", match.text)
 		}
 	}
+	// What would be a mistake in a command is one in a call.
+	var usage *UsageError
+	if errors.As(err, &usage) {
+		return api.Errorf(http.StatusBadRequest, "%s", usage.Error())
+	}
 	return err
 }
 
@@ -189,4 +194,50 @@ func (apiBackend) Exec(ctx context.Context, site, pattern string, action api.Act
 		return nil, apiError(err)
 	}
 	return results, nil
+}
+
+func (apiBackend) Wait(ctx context.Context, site, pattern string, wait api.Wait) ([]api.Waited, error) {
+	if err := checkPattern(pattern); err != nil {
+		return nil, api.Errorf(http.StatusBadRequest, "%v", err)
+	}
+	state, connection, err := waitState(wait.State)
+	if err != nil {
+		return nil, apiError(err)
+	}
+	if connection && wait.Connector != nil {
+		return nil, api.Errorf(http.StatusBadRequest, "%s is a state of the whole charger, so it takes no connector", state)
+	}
+	q := waiting{site: site, patterns: []string{pattern}, state: state, connection: connection, connector: 1, timeout: wait.Timeout}
+	if wait.Connector != nil {
+		q.connector = *wait.Connector
+	}
+	chargers, err := q.run(ctx)
+	if err != nil {
+		return nil, apiError(err)
+	}
+	return chargers, nil
+}
+
+func (apiBackend) Logs(ctx context.Context, site, pattern string, query api.LogQuery) ([]api.LogLine, error) {
+	if err := checkPattern(pattern); err != nil {
+		return nil, api.Errorf(http.StatusBadRequest, "%v", err)
+	}
+	since, err := parseSince(query.Since)
+	switch {
+	case errors.Is(err, errSinceNegative):
+		return nil, api.Errorf(http.StatusBadRequest, "since cannot be negative")
+	case err != nil:
+		return nil, api.Errorf(http.StatusBadRequest, "invalid since %v", err)
+	}
+	dir, sites, err := logSites(ctx, site, pattern)
+	if err != nil {
+		return nil, apiError(err)
+	}
+	// A charger that has not run yet has no log, which is no lines.
+	_, entries, _ := readLogs(dir, sites, query.Events, since, query.Tail)
+	lines := make([]api.LogLine, 0, len(entries))
+	for _, e := range entries {
+		lines = append(lines, logLine(e))
+	}
+	return lines, nil
 }

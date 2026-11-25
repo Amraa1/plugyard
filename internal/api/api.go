@@ -21,6 +21,8 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -68,6 +70,64 @@ type Action struct {
 	Curve     string `json:"curve,omitempty"`
 }
 
+// Wait says what to wait for: a state of chargers, as "plugyard wait"
+// takes it.
+type Wait struct {
+	// State is a connector status or a connection state, in any case.
+	State string
+	// Connector is the connector a status is that of. Nil means the
+	// default: connector 1.
+	Connector *int
+	// Timeout is how long to wait at most.
+	Timeout time.Duration
+}
+
+// Waited says where one charger was when a wait ended.
+type Waited struct {
+	Site          string `json:"site"`
+	ChargePointID string `json:"chargePointId"`
+	// Connector is the connector the state is that of. It is absent for
+	// a state of the whole charger.
+	Connector int `json:"connector,omitempty"`
+	// State is the state the charger or its connector was in.
+	State string `json:"state"`
+	// Reached says whether that is the state waited for.
+	Reached bool `json:"reached"`
+}
+
+// The limits of a wait and of reading the log, so that one call neither
+// holds a connection for ever nor answers with a whole log.
+const (
+	DefaultWaitTimeout = 30 * time.Second
+	MaxWaitTimeout     = 5 * time.Minute
+	DefaultLogTail     = 200
+	MaxLogTail         = 5000
+)
+
+// LogQuery says which lines of the log to read, as the flags of "plugyard
+// logs" do.
+type LogQuery struct {
+	// Since is how long ago, such as 10m, or a time. Empty means from
+	// the start of the log.
+	Since string
+	// Tail is how many lines to answer with at most: the newest.
+	Tail int
+	// Events leaves the OCPP messages out.
+	Events bool
+}
+
+// LogLine is one line of the log of a charger, as "plugyard logs --format
+// json" prints it.
+type LogLine struct {
+	Time          string `json:"time"`
+	ChargePointID string `json:"chargePointId"`
+	// Kind is "event", "sent" or "received".
+	Kind string `json:"kind"`
+	Text string `json:"text"`
+	// Message is the OCPP message of a line that is one.
+	Message json.RawMessage `json:"message,omitempty"`
+}
+
 // Backend is what the API needs done. The command line implements it, so
 // that a call to the API does what the command of the same name does.
 type Backend interface {
@@ -79,6 +139,13 @@ type Backend interface {
 	Inspect(ctx context.Context, site, charger string) (any, error)
 	// Exec runs an action on the chargers a charger argument names.
 	Exec(ctx context.Context, site, charger string, action Action) ([]control.ExecResult, error)
+	// Wait waits until the chargers a charger argument names are in a
+	// state, and says where each was when that was so or the time was
+	// up.
+	Wait(ctx context.Context, site, charger string, wait Wait) ([]Waited, error)
+	// Logs returns lines of the log of the chargers a charger argument
+	// names, oldest first.
+	Logs(ctx context.Context, site, charger string, query LogQuery) ([]LogLine, error)
 }
 
 // Error is a failure the caller is told about with an HTTP status of its
@@ -163,6 +230,8 @@ type Server struct {
 	sockPath string
 	done     chan struct{}
 	stop     chan struct{}
+	// closing ends the calls that are still waiting when the API stops.
+	closing context.CancelFunc
 }
 
 func socketPath(dataDir string) string { return filepath.Join(dataDir, "api.sock") }
@@ -225,7 +294,9 @@ func Serve(cfg Config) (*Server, error) {
 		return nil, err
 	}
 
+	calls, closing := context.WithCancel(context.Background())
 	s := &Server{
+		closing:  closing,
 		cfg:      cfg,
 		local:    local,
 		audit:    log,
@@ -247,9 +318,12 @@ func Serve(cfg Config) (*Server, error) {
 	routes.HandleFunc("GET /v1/openapi.json", s.handleSpec)
 	routes.HandleFunc("GET /v1/chargers", s.handleList)
 	routes.HandleFunc("GET /v1/chargers/{charger}", s.handleInspect)
+	routes.HandleFunc("GET /v1/chargers/{charger}/wait", s.handleWait)
+	routes.HandleFunc("GET /v1/chargers/{charger}/logs", s.handleLogs)
 	routes.HandleFunc("POST /v1/chargers/{charger}/{action}", s.handleAction)
 	s.http = &http.Server{
 		Handler:           s.guard(routes),
+		BaseContext:       func(net.Listener) context.Context { return calls },
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		WriteTimeout:      2 * time.Minute,
@@ -312,6 +386,7 @@ func (s *Server) Done() <-chan struct{} { return s.done }
 
 // Close stops the API.
 func (s *Server) Close() {
+	s.closing()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := s.http.Shutdown(ctx); err != nil {
@@ -349,6 +424,10 @@ func (r *recorder) WriteHeader(status int) {
 	r.ResponseWriter.WriteHeader(status)
 }
 
+// Unwrap lets a route that answers late move the time limits of its
+// connection.
+func (r *recorder) Unwrap() http.ResponseWriter { return r.ResponseWriter }
+
 func (r *recorder) fail(status int, format string, args ...any) {
 	r.entry.Message = fmt.Sprintf(format, args...)
 	writeJSON(r, status, map[string]string{"error": r.entry.Message})
@@ -370,7 +449,7 @@ func (s *Server) guard(next http.Handler) http.Handler {
 			entry.Action = "list"
 		case len(parts) == 3 && r.Method == http.MethodGet:
 			entry.Action, entry.Chargers = "inspect", []string{parts[2]}
-		case len(parts) == 4 && r.Method == http.MethodPost:
+		case len(parts) == 4 && (r.Method == http.MethodPost || parts[3] == "wait" || parts[3] == "logs"):
 			entry.Action, entry.Chargers = parts[3], []string{parts[2]}
 		}
 
@@ -576,6 +655,140 @@ func (s *Server) handleAction(w http.ResponseWriter, r *http.Request) {
 		rec.entry.Message = results[0].Message
 	}
 	writeJSON(rec, status, map[string]any{"results": results})
+}
+
+// What waiting and reading the log take in the address of a call, beside
+// the site.
+var (
+	waitTakes = []string{"state", "connector", "timeout"}
+	logsTakes = []string{"since", "tail", "events"}
+)
+
+// query reads the parameters of a call's address. One the call does not
+// take is a mistake, as an option an action does not take is: a misspelt
+// "timeout" would otherwise be left out without a word.
+func query(rec *recorder, r *http.Request, takes ...string) (map[string]string, bool) {
+	given := map[string]string{}
+	for name, values := range r.URL.Query() {
+		known := name == "site"
+		for _, t := range takes {
+			known = known || name == t
+		}
+		if !known {
+			rec.fail(http.StatusBadRequest, "%s does not take %q: it takes %s", rec.entry.Action, name, strings.Join(slices.Concat(takes, []string{"site"}), ", "))
+			return nil, false
+		}
+		given[name] = values[0]
+	}
+	return given, true
+}
+
+func (s *Server) handleWait(w http.ResponseWriter, r *http.Request) {
+	rec := w.(*recorder)
+	rec.entry.Action = "wait"
+	rec.entry.Chargers = []string{r.PathValue("charger")}
+	given, ok := query(rec, r, waitTakes...)
+	if !ok {
+		return
+	}
+	site, ok := s.site(rec, r)
+	if !ok {
+		return
+	}
+
+	wait := Wait{State: given["state"], Timeout: DefaultWaitTimeout}
+	if wait.State == "" {
+		rec.fail(http.StatusBadRequest, "wait needs \"state\", the state to wait for, such as ?state=Charging")
+		return
+	}
+	if text, ok := given["connector"]; ok {
+		n, err := strconv.Atoi(text)
+		if err != nil || n < 1 {
+			rec.fail(http.StatusBadRequest, "the connector number must be 1 or more")
+			return
+		}
+		wait.Connector = &n
+	}
+	if text, ok := given["timeout"]; ok {
+		d, err := time.ParseDuration(text)
+		if err != nil || d <= 0 || d > MaxWaitTimeout {
+			rec.fail(http.StatusBadRequest, "timeout must be a time above zero and at most %s, such as 30s; to wait longer, call again", MaxWaitTimeout)
+			return
+		}
+		wait.Timeout = d
+	}
+	// The answer comes when the wait is over, which is later than the
+	// server gives a call otherwise.
+	limits := http.NewResponseController(rec)
+	late := time.Now().Add(wait.Timeout + 30*time.Second)
+	_ = limits.SetReadDeadline(late)
+	_ = limits.SetWriteDeadline(late)
+
+	chargers, err := s.cfg.Backend.Wait(r.Context(), site, r.PathValue("charger"), wait)
+	if err != nil && r.Context().Err() != nil {
+		rec.fail(http.StatusServiceUnavailable, "the wait ended early: the API is stopping, or the caller went away")
+		return
+	}
+	if err != nil {
+		answer(rec, r, err)
+		return
+	}
+	rec.entry.Chargers = nil
+	reached, state := true, wait.State
+	for _, c := range chargers {
+		rec.entry.Chargers = append(rec.entry.Chargers, c.ChargePointID)
+		reached = reached && c.Reached
+	}
+	if reached {
+		rec.entry.Message = state
+	} else {
+		rec.entry.Message = fmt.Sprintf("not %s after %s", state, wait.Timeout)
+	}
+	// A state that did not come in time is an answer and not a failure
+	// of the call: the caller asked whether it would.
+	writeJSON(rec, http.StatusOK, map[string]any{"reached": reached, "chargers": chargers})
+}
+
+func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
+	rec := w.(*recorder)
+	rec.entry.Action = "logs"
+	rec.entry.Chargers = []string{r.PathValue("charger")}
+	given, ok := query(rec, r, logsTakes...)
+	if !ok {
+		return
+	}
+	site, ok := s.site(rec, r)
+	if !ok {
+		return
+	}
+
+	q := LogQuery{Since: given["since"], Tail: DefaultLogTail}
+	if text, ok := given["tail"]; ok {
+		n, err := strconv.Atoi(text)
+		if err != nil || n < 0 || n > MaxLogTail {
+			rec.fail(http.StatusBadRequest, "tail must be a number from 0 to %d; for older lines, narrow the call with \"since\" or \"events\"", MaxLogTail)
+			return
+		}
+		q.Tail = n
+	}
+	if text, ok := given["events"]; ok {
+		only, err := strconv.ParseBool(text)
+		if err != nil {
+			rec.fail(http.StatusBadRequest, "events must be true or false")
+			return
+		}
+		q.Events = only
+	}
+
+	lines, err := s.cfg.Backend.Logs(r.Context(), site, r.PathValue("charger"), q)
+	if err != nil {
+		answer(rec, r, err)
+		return
+	}
+	if lines == nil {
+		lines = []LogLine{}
+	}
+	writeJSON(rec, http.StatusOK, map[string]any{"lines": lines})
 }
 
 // adminClient reaches a running API over its socket.
