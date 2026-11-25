@@ -66,7 +66,10 @@ func newAPIUp() *cobra.Command {
 			"unencrypted, which is only safe on this machine or behind a reverse proxy\n" +
 			"that adds encryption.\n\n" +
 			"Sites may come and go while the API runs: it serves whatever chargers\n" +
-			"there are at the moment of a call.",
+			"there are at the moment of a call.\n\n" +
+			"AI agents use the same reading and actions as tools, over the Model\n" +
+			"Context Protocol (MCP), at the address of the API followed by " + api.MCPPath + ",\n" +
+			"with the same tokens.",
 		Example: "  plugyard api up\n" +
 			"  plugyard api up -d\n" +
 			"  plugyard api up -d --listen 0.0.0.0:7070",
@@ -100,6 +103,7 @@ func newAPIUp() *cobra.Command {
 					return err
 				}
 				fmt.Fprintf(out, "The API is running in the background at %s (process %d)\n", info.URL(), info.PID)
+				fmt.Fprintf(out, "AI agents use:      %s%s\n", info.URL(), api.MCPPath)
 				fmt.Fprintln(out, "See its calls with: plugyard api logs")
 				fmt.Fprintln(out, "Stop it with:       plugyard api down")
 				return nil
@@ -145,6 +149,7 @@ func announceAPI(cmd *cobra.Command, server *api.Server, dir string) {
 	out, info := cmd.OutOrStdout(), server.Info()
 	tokens, _ := api.LoadTokens(dir)
 	fmt.Fprintf(out, "The API is listening at %s\n", info.URL())
+	fmt.Fprintf(out, "AI agents use its tools at %s%s\n", info.URL(), api.MCPPath)
 	switch {
 	case len(tokens) > 0:
 		fmt.Fprintf(out, "Every call needs a token (%s)\n", countTokens(len(tokens)))
@@ -244,7 +249,9 @@ func newAPIDown() *cobra.Command {
 type apiStatus struct {
 	Running bool `json:"running"`
 	// URL is where the API listens; empty when it is not running.
-	URL     string     `json:"url,omitempty"`
+	URL string `json:"url,omitempty"`
+	// MCPURL is where AI agents reach the tools of the API.
+	MCPURL  string     `json:"mcpUrl,omitempty"`
 	PID     int        `json:"pid,omitempty"`
 	Since   *time.Time `json:"since,omitempty"`
 	TLS     bool       `json:"tls"`
@@ -276,6 +283,7 @@ func newAPIStatus() *cobra.Command {
 			status := apiStatus{Tokens: len(tokens), TokenNeeded: len(tokens) > 0}
 			if info, err := api.Probe(cmd.Context(), dir); err == nil {
 				status.Running, status.URL, status.PID, status.TLS, status.Version = true, info.URL(), info.PID, info.TLS, info.Version
+				status.MCPURL = info.URL() + api.MCPPath
 				status.Since = &info.Since
 			}
 
@@ -297,6 +305,7 @@ func newAPIStatus() *cobra.Command {
 			}
 			writeTable(out, [][]cell{
 				{plain("Address"), plain(status.URL)},
+				{plain("Agents"), plain(status.MCPURL + " (MCP)")},
 				{plain("Process"), plain(strconv.Itoa(status.PID))},
 				{plain("Since"), plain(status.Since.Local().Format("2006-01-02 15:04:05"))},
 				{plain("Tokens"), plain(need)},

@@ -32,7 +32,7 @@ func TestSiteUpWithTheAPI(t *testing.T) {
 	out := mustRun(t, "api", "status")
 	base := ""
 	for _, field := range strings.Fields(out) {
-		if strings.HasPrefix(field, "http://127.0.0.1:") {
+		if strings.HasPrefix(field, "http://127.0.0.1:") && !strings.HasSuffix(field, "/mcp") {
 			base = field
 		}
 	}

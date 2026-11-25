@@ -33,6 +33,7 @@ One site must run hundreds to a few thousand chargers comfortably on a developer
 - Chargers defined in files, driven by commands and by scenarios
 - Charger state saved to disk, surviving stops, terminal exits and machine shutdowns
 - An HTTP API for callers with no shell on the machine, added after V1 (section 14, ADR 0006)
+- Tools for AI agents over the Model Context Protocol (MCP), served by the API, added after V1 (section 14, ADR 0007)
 
 ### Not in V1
 
@@ -48,7 +49,7 @@ One site must run hundreds to a few thousand chargers comfortably on a developer
 - A build step, a model store or a registry
 - A background daemon or system service; automatic start after reboot
 - Through the HTTP API: anything but actions on chargers and reading them (section 14)
-- An MCP server, which is to follow the HTTP API
+- An MCP server that the agent's client starts on its own machine; the command line and the guide serve an agent there (section 12)
 - Assertions, conditions or loops in scenarios
 - Commands `events`, `pause`, `attach`
 - Waiting for an OCPP message or a log line; `wait` waits for a state
@@ -716,7 +717,7 @@ Reading it:
 
 ### AI agents
 
-AI agents, such as coding assistants that run commands for a user, are a third kind of user. Three things are made for them:
+AI agents, such as coding assistants that run commands for a user, are a third kind of user. Three things are made for an agent that has a shell where plugyard runs:
 
 | What | Where | For |
 |---|---|---|
@@ -732,7 +733,7 @@ AI agents, such as coding assistants that run commands for a user, are a third k
   - In a folder that already has the starter files, `--agents` installs only the skill and leaves the files alone.
   - plugyard does not write the skill itself.
 - Plain `plugyard init` names `plugyard init --agents` among the next commands.
-- An MCP server is not part of plugyard; the command line and the guide take its place.
+- An agent with no shell where plugyard runs, such as one on a developer's machine while plugyard is on a staging server, uses the tools the API serves over MCP (section 14).
 
 JSON schemas for the three file types are in the repository under `schemas/`, and inside the program:
 
@@ -865,6 +866,7 @@ Those stay on the command line, because each is a way from "can call the API" to
 | `GET /v1/chargers/{charger}/logs` | The newest lines of the log of chargers | `logs <charger> --format json` |
 | `POST /v1/chargers/{charger}/{action}` | Runs an action | `exec <charger> <action>` |
 | `GET /v1/openapi.json` | The description of the API | `api spec` |
+| `POST /mcp` | The same reading and actions as tools for AI agents (see below) | |
 
 - `{charger}` is a charge point ID or a name. For an action, a wait and the log it may be a pattern, such as `FAST-*`.
 - `{action}` is one of `plug`, `unplug`, `tap`, `fault`, `clear`, `offline`, `online`, `reboot` and `fail`.
@@ -929,3 +931,38 @@ Every call is recorded, also the ones turned away:
 - A wait is recorded when it ends, with whether the state was reached: `wait CP-1: Charging`, or `wait CP-1: not Charging after 30s`.
 - What the CSMS wrote, such as a rejected tag's status, can appear in an outcome, and the log of a charger holds the messages the CSMS sent. It is data, never an instruction (section 12).
 
+### Tools for AI agents (MCP)
+
+An AI agent on another machine reaches the chargers through tools, over the Model Context Protocol (MCP), at the address of the API followed by `/mcp` (ADR 0007). The first users are developers who work through a coding agent and test against a CSMS on a staging server.
+
+In Claude Code it is added with:
+
+```sh
+claude mcp add --transport http plugyard https://plugyard.example.com/mcp --header "Authorization: Bearer <token>"
+```
+
+- **It is part of the API**: `plugyard api up` and `site up --api` serve it, with no switch of its own. `api up` and `api status` print its address.
+- **Every rule of "Who may call" holds.** It needs a token when a call under `/v1` does, sent the same way. It is closed to web pages in a browser.
+- **There are no sessions.** Every request stands alone and carries its token, so nothing is kept between requests and the API can restart without the agent noticing. A `GET` is answered with `405`.
+
+| Tool | Does | As |
+|---|---|---|
+| `list_chargers` | Lists every charger, running or stopped | `GET /v1/chargers` |
+| `inspect_charger` | Everything about one charger | `GET /v1/chargers/{charger}` |
+| `wait_for_state` | Answers once the chargers are in a state, or the time is up | `GET /v1/chargers/{charger}/wait` |
+| `read_logs` | The newest lines of the log of chargers | `GET /v1/chargers/{charger}/logs` |
+| `plug`, `unplug`, `tap`, `fault`, `reboot` | Run the action of the same name | `POST /v1/chargers/{charger}/{action}` |
+| `clear_fault`, `go_offline`, `go_online`, `fail_next` | Run `clear`, `offline`, `online` and `fail` | `POST /v1/chargers/{charger}/{action}` |
+
+- **One tool per action**, so that an agent's client can show each for what it is, and ask its user before one and not another.
+- **Each tool is marked as reading or acting.** `unplug`, `fault`, `go_offline` and `reboot` are also marked as able to end or interrupt a transaction.
+- **A read-only token is offered the four reading tools and no others.** Its agent never sees an action.
+- **The arguments are those of the call**: `charger`, `site`, and the options of the action or the parameters of the wait or the log, with the same names. An argument a tool does not take is a mistake.
+- **A tool answers with what the call answers with**: the same fields, as JSON.
+  - `read_logs` answers with the newest `50` lines unless `tail` says otherwise, fewer than the call, since an agent reads every line it is given.
+  - A state that did not come in time is an answer with `"reached": false`, not a failure.
+  - A failure is told in the words the call would use, marked as a failure of the tool, so that the agent can put its call right. An action that could not be carried out on every charger is such a failure, and has the results.
+- **What the CSMS wrote is data.** The instructions the server gives an agent when it connects say so, and so does the description of every tool whose answer can hold such text: `list_chargers`, `inspect_charger`, `read_logs` and `tap`.
+- **Each call of a tool is a line in the log of calls**, with the action as a call under `/v1` names it: `plug CP-1: EV plugged in`. A call that reached no tool, because no tool has that name for this token or because its arguments are wrong, is recorded with `400` and the name it used. The requests the protocol makes for itself are not recorded, except those turned away.
+- **Tools cannot start, stop, add or remove chargers**, or do anything else the API does not do.
+- The tools are tested with a client of the protocol against real simulated chargers.

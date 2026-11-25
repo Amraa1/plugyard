@@ -230,7 +230,9 @@ type Server struct {
 	sockPath string
 	done     chan struct{}
 	stop     chan struct{}
-	// closing ends the calls that are still waiting when the API stops.
+	// calls is done, and closing makes it so, when the API stops: it
+	// ends the calls that are still waiting.
+	calls   context.Context
 	closing context.CancelFunc
 }
 
@@ -296,6 +298,7 @@ func Serve(cfg Config) (*Server, error) {
 
 	calls, closing := context.WithCancel(context.Background())
 	s := &Server{
+		calls:    calls,
 		closing:  closing,
 		cfg:      cfg,
 		local:    local,
@@ -321,6 +324,7 @@ func Serve(cfg Config) (*Server, error) {
 	routes.HandleFunc("GET /v1/chargers/{charger}/wait", s.handleWait)
 	routes.HandleFunc("GET /v1/chargers/{charger}/logs", s.handleLogs)
 	routes.HandleFunc("POST /v1/chargers/{charger}/{action}", s.handleAction)
+	routes.Handle(MCPPath, s.mcpHandler())
 	s.http = &http.Server{
 		Handler:           s.guard(routes),
 		BaseContext:       func(net.Listener) context.Context { return calls },
@@ -409,6 +413,8 @@ type caller struct {
 	name     string
 	site     string
 	readOnly bool
+	// remote is the address the call came from.
+	remote string
 }
 
 type callerKey struct{}
@@ -417,6 +423,8 @@ type callerKey struct{}
 type recorder struct {
 	http.ResponseWriter
 	entry *Entry
+	// refused says that the call was turned away here, with fail.
+	refused bool
 }
 
 func (r *recorder) WriteHeader(status int) {
@@ -429,6 +437,7 @@ func (r *recorder) WriteHeader(status int) {
 func (r *recorder) Unwrap() http.ResponseWriter { return r.ResponseWriter }
 
 func (r *recorder) fail(status int, format string, args ...any) {
+	r.refused = true
 	r.entry.Message = fmt.Sprintf(format, args...)
 	writeJSON(r, status, map[string]string{"error": r.entry.Message})
 }
@@ -440,7 +449,16 @@ func (s *Server) guard(next http.Handler) http.Handler {
 		remote, _, _ := net.SplitHostPort(r.RemoteAddr)
 		entry := &Entry{Time: time.Now().UTC(), Token: "-", Remote: remote, Method: r.Method, Path: r.URL.Path, Status: http.StatusOK}
 		rec := &recorder{ResponseWriter: w, entry: entry}
-		defer func() { s.audit.record(*entry) }()
+		// An agent's requests to the tools are mostly the protocol
+		// talking to itself. The log records each call of a tool
+		// instead, which says who did what to which charger, and the
+		// requests that were turned away.
+		tools := r.URL.Path == MCPPath
+		defer func() {
+			if !tools || rec.refused {
+				s.audit.record(*entry)
+			}
+		}()
 		// What the call is about is noted first, so that the log says it
 		// also for a call that is turned away.
 		switch parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/"); {
@@ -493,10 +511,21 @@ func (s *Server) guard(next http.Handler) http.Handler {
 			}
 			who = caller{name: token.Name, site: token.Site, readOnly: token.ReadOnly}
 		}
+		who.remote = remote
 		entry.Token = who.name
 
+		if tools {
+			// A tool may wait as long as a wait under /v1 does.
+			limits := http.NewResponseController(rec)
+			late := time.Now().Add(MaxWaitTimeout + 30*time.Second)
+			_ = limits.SetReadDeadline(late)
+			_ = limits.SetWriteDeadline(late)
+		}
 		if r.Method == http.MethodPost {
-			if who.readOnly {
+			// Every request to the tools is a POST, also the ones that
+			// read: there a read-only token is offered no tool that
+			// acts.
+			if who.readOnly && !tools {
 				rec.fail(http.StatusForbidden, "token %s is read-only: it can look at chargers and not act on them", who.name)
 				return
 			}
@@ -546,20 +575,25 @@ func (s *Server) site(rec *recorder, r *http.Request) (string, bool) {
 
 // answer writes what a Backend failed with.
 func answer(rec *recorder, r *http.Request, err error) {
+	status, message := explain(r.Context().Value(callerKey{}).(caller), err)
+	rec.fail(status, "%s", message)
+}
+
+// explain says with which status and which words a caller is told what a
+// Backend failed with.
+func explain(who caller, err error) (int, string) {
 	var known *Error
 	if !errors.As(err, &known) {
-		rec.fail(http.StatusInternalServerError, "%v", err)
-		return
+		return http.StatusInternalServerError, err.Error()
 	}
 	// A token that is limited to a site is told so when it asks for a
 	// charger it cannot reach, whether that charger is in another site
 	// or nowhere at all. The answer is the same for both, so it says
 	// nothing about what other sites hold.
-	if who := r.Context().Value(callerKey{}).(caller); who.site != "" && known.Status == http.StatusNotFound {
-		rec.fail(http.StatusForbidden, "token %s is limited to site %s: %s", who.name, who.site, known.Message)
-		return
+	if who.site != "" && known.Status == http.StatusNotFound {
+		return http.StatusForbidden, fmt.Sprintf("token %s is limited to site %s: %s", who.name, who.site, known.Message)
 	}
-	rec.fail(known.Status, "%s", known.Message)
+	return known.Status, known.Message
 }
 
 func (s *Server) handleSpec(w http.ResponseWriter, _ *http.Request) {
@@ -634,27 +668,33 @@ func (s *Server) handleAction(w http.ResponseWriter, r *http.Request) {
 		answer(rec, r, err)
 		return
 	}
+	writeJSON(rec, executed(rec.entry, results), map[string]any{"results": results})
+}
+
+// executed notes in the record of a call how an action ended, and returns
+// the status that says so.
+func executed(entry *Entry, results []control.ExecResult) int {
 	// The log names the chargers the action ran on, which a pattern
 	// does not.
-	rec.entry.Chargers = nil
+	entry.Chargers = nil
 	status, failed := http.StatusOK, 0
 	for _, result := range results {
-		rec.entry.Chargers = append(rec.entry.Chargers, result.ChargePointID)
+		entry.Chargers = append(entry.Chargers, result.ChargePointID)
 		if !result.OK {
 			failed++
-			rec.entry.Message = result.Message
+			entry.Message = result.Message
 		}
 	}
 	if failed > 0 {
 		// The action could not be carried out on every charger.
 		status = http.StatusConflict
 		if len(results) > 1 {
-			rec.entry.Message = fmt.Sprintf("failed on %d of %d chargers", failed, len(results))
+			entry.Message = fmt.Sprintf("failed on %d of %d chargers", failed, len(results))
 		}
 	} else if len(results) == 1 {
-		rec.entry.Message = results[0].Message
+		entry.Message = results[0].Message
 	}
-	writeJSON(rec, status, map[string]any{"results": results})
+	return status
 }
 
 // What waiting and reading the log take in the address of a call, beside
@@ -696,26 +736,18 @@ func (s *Server) handleWait(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	wait := Wait{State: given["state"], Timeout: DefaultWaitTimeout}
-	if wait.State == "" {
-		rec.fail(http.StatusBadRequest, "wait needs \"state\", the state to wait for, such as ?state=Charging")
-		return
-	}
+	var connector *int
 	if text, ok := given["connector"]; ok {
 		n, err := strconv.Atoi(text)
-		if err != nil || n < 1 {
-			rec.fail(http.StatusBadRequest, "the connector number must be 1 or more")
-			return
+		if err != nil {
+			n = -1
 		}
-		wait.Connector = &n
+		connector = &n
 	}
-	if text, ok := given["timeout"]; ok {
-		d, err := time.ParseDuration(text)
-		if err != nil || d <= 0 || d > MaxWaitTimeout {
-			rec.fail(http.StatusBadRequest, "timeout must be a time above zero and at most %s, such as 30s; to wait longer, call again", MaxWaitTimeout)
-			return
-		}
-		wait.Timeout = d
+	wait, err := newWait(given["state"], connector, given["timeout"])
+	if err != nil {
+		answer(rec, r, err)
+		return
 	}
 	// The answer comes when the wait is over, which is later than the
 	// server gives a call otherwise.
@@ -726,27 +758,65 @@ func (s *Server) handleWait(w http.ResponseWriter, r *http.Request) {
 
 	chargers, err := s.cfg.Backend.Wait(r.Context(), site, r.PathValue("charger"), wait)
 	if err != nil && r.Context().Err() != nil {
-		rec.fail(http.StatusServiceUnavailable, "the wait ended early: the API is stopping, or the caller went away")
-		return
+		err = errWaitEnded
 	}
 	if err != nil {
 		answer(rec, r, err)
 		return
 	}
-	rec.entry.Chargers = nil
-	reached, state := true, wait.State
+	// A state that did not come in time is an answer and not a failure
+	// of the call: the caller asked whether it would.
+	writeJSON(rec, http.StatusOK, waited(rec.entry, wait, chargers))
+}
+
+var errWaitEnded = Errorf(http.StatusServiceUnavailable, "the wait ended early: the API is stopping, or the caller went away")
+
+// newWait checks what a wait was asked with. An empty timeout stands for
+// the default.
+func newWait(state string, connector *int, timeout string) (Wait, error) {
+	wait := Wait{State: state, Connector: connector, Timeout: DefaultWaitTimeout}
+	if state == "" {
+		return wait, Errorf(http.StatusBadRequest, "wait needs \"state\", the state to wait for, such as Charging")
+	}
+	if connector != nil && *connector < 1 {
+		return wait, Errorf(http.StatusBadRequest, "the connector number must be 1 or more")
+	}
+	if timeout != "" {
+		d, err := time.ParseDuration(timeout)
+		if err != nil || d <= 0 || d > MaxWaitTimeout {
+			return wait, Errorf(http.StatusBadRequest, "timeout must be a time above zero and at most %s, such as 30s; to wait longer, call again", MaxWaitTimeout)
+		}
+		wait.Timeout = d
+	}
+	return wait, nil
+}
+
+// waited notes in the record of a call how a wait ended, and returns what
+// the caller is answered with.
+func waited(entry *Entry, wait Wait, chargers []Waited) map[string]any {
+	entry.Chargers = nil
+	reached := true
 	for _, c := range chargers {
-		rec.entry.Chargers = append(rec.entry.Chargers, c.ChargePointID)
+		entry.Chargers = append(entry.Chargers, c.ChargePointID)
 		reached = reached && c.Reached
 	}
 	if reached {
-		rec.entry.Message = state
+		entry.Message = wait.State
 	} else {
-		rec.entry.Message = fmt.Sprintf("not %s after %s", state, wait.Timeout)
+		entry.Message = fmt.Sprintf("not %s after %s", wait.State, wait.Timeout)
 	}
-	// A state that did not come in time is an answer and not a failure
-	// of the call: the caller asked whether it would.
-	writeJSON(rec, http.StatusOK, map[string]any{"reached": reached, "chargers": chargers})
+	if chargers == nil {
+		chargers = []Waited{}
+	}
+	return map[string]any{"reached": reached, "chargers": chargers}
+}
+
+// logTail checks how many lines of the log were asked for.
+func logTail(n int) (int, error) {
+	if n < 0 || n > MaxLogTail {
+		return 0, Errorf(http.StatusBadRequest, "tail must be a number from 0 to %d; for older lines, narrow the call with \"since\" or \"events\"", MaxLogTail)
+	}
+	return n, nil
 }
 
 func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
@@ -765,11 +835,13 @@ func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 	q := LogQuery{Since: given["since"], Tail: DefaultLogTail}
 	if text, ok := given["tail"]; ok {
 		n, err := strconv.Atoi(text)
-		if err != nil || n < 0 || n > MaxLogTail {
-			rec.fail(http.StatusBadRequest, "tail must be a number from 0 to %d; for older lines, narrow the call with \"since\" or \"events\"", MaxLogTail)
+		if err != nil {
+			n = -1
+		}
+		if q.Tail, err = logTail(n); err != nil {
+			answer(rec, r, err)
 			return
 		}
-		q.Tail = n
 	}
 	if text, ok := given["events"]; ok {
 		only, err := strconv.ParseBool(text)

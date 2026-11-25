@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -12,6 +13,7 @@ import (
 	"github.com/Amraa1/plugyard/internal/api"
 	"github.com/Amraa1/plugyard/internal/csmstest"
 	"github.com/Amraa1/plugyard/internal/ocpp/v16"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 // apiCall calls the running API and returns the status and the body.
@@ -442,6 +444,83 @@ func TestAPIWaitsAndReadsTheLogLikeTheCommands(t *testing.T) {
 	// The calls are in the log of the API, with how each wait ended.
 	log := mustRun(t, "api", "logs")
 	for _, want := range []string{" 200 wait CP-1,CP-2: Charging\n", " 200 wait CP-1,CP-2: not Charging after 300ms\n", " 200 logs CP-2\n", " 404 wait CP-9: no charger matches"} {
+		if !strings.Contains(log, want) {
+			t.Errorf("api logs lacks %q:\n%s", want, log)
+		}
+	}
+}
+
+// An AI agent drives the chargers through the tools of the API, with a
+// client of the Model Context Protocol.
+func TestAnAgentDrivesChargersThroughTheTools(t *testing.T) {
+	useTempDataDir(t)
+	csms := csmstest.Start(t)
+	startRun(t, csms, "CP-1")
+	base := apiUp(t)
+
+	out := mustRun(t, "api", "status")
+	if !strings.Contains(out, "Agents   "+base+"/mcp (MCP)\n") {
+		t.Errorf("api status does not say where agents connect:\n%s", out)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	client := mcp.NewClient(&mcp.Implementation{Name: "test", Version: "1"}, nil)
+	session, err := client.Connect(ctx, &mcp.StreamableClientTransport{Endpoint: base + api.MCPPath, DisableStandaloneSSE: true}, nil)
+	if err != nil {
+		t.Fatalf("connecting to the tools: %v", err)
+	}
+	defer session.Close()
+	use := func(tool string, args map[string]any) string {
+		t.Helper()
+		result, err := session.CallTool(ctx, &mcp.CallToolParams{Name: tool, Arguments: args})
+		if err != nil {
+			t.Fatalf("%s: %v", tool, err)
+		}
+		text := result.Content[0].(*mcp.TextContent).Text
+		if result.IsError {
+			t.Fatalf("%s failed: %s", tool, text)
+		}
+		return text
+	}
+
+	if got := use("list_chargers", nil); !strings.Contains(got, `"chargePointId":"CP-1"`) || !strings.Contains(got, `"connection":"online"`) {
+		t.Errorf("list_chargers = %s", got)
+	}
+	// A charging session, the way the instructions of the server describe it.
+	if got := use("plug", map[string]any{"charger": "CP-1", "soc": "30%"}); !strings.Contains(got, `"ok":true`) || !strings.Contains(got, "EV plugged in") {
+		t.Errorf("plug = %s", got)
+	}
+	if got := use("tap", map[string]any{"charger": "CP-1", "tag": "TAG-1"}); !strings.Contains(got, `"ok":true`) {
+		t.Errorf("tap = %s", got)
+	}
+	if got := use("wait_for_state", map[string]any{"charger": "CP-1", "state": "Charging", "timeout": "10s"}); !strings.Contains(got, `"state":"Charging","reached":true}],"reached":true`) {
+		t.Errorf("wait_for_state = %s", got)
+	}
+	if got := use("inspect_charger", map[string]any{"charger": "CP-1"}); !strings.Contains(got, `"idTag":"TAG-1"`) {
+		t.Errorf("inspect_charger does not show the transaction: %s", got)
+	}
+	if got := use("read_logs", map[string]any{"charger": "CP-1", "events": true}); !strings.Contains(got, "EV plugged in") || !strings.Contains(got, `"kind":"event"`) {
+		t.Errorf("read_logs = %s", got)
+	}
+	if got := use("read_logs", map[string]any{"charger": "CP-1", "tail": 3}); !strings.Contains(got, `"message":[`) {
+		t.Errorf("read_logs with messages = %s", got)
+	}
+	// What the command line would refuse, the tool refuses with the same
+	// words.
+	result, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "fault", Arguments: map[string]any{"charger": "CP-1", "code": "Broken"}})
+	if err != nil || !result.IsError || !strings.Contains(result.Content[0].(*mcp.TextContent).Text, "one of the OCPP 1.6 error codes") {
+		t.Errorf("fault with a code OCPP does not have: %+v, %v", result, err)
+	}
+	use("tap", map[string]any{"charger": "CP-1", "tag": "TAG-1"})
+	use("unplug", map[string]any{"charger": "CP-1"})
+	if got := use("wait_for_state", map[string]any{"charger": "CP-1", "state": "Available", "timeout": "10s"}); !strings.Contains(got, `"reached":true}`) {
+		t.Errorf("wait_for_state after the session = %s", got)
+	}
+
+	// The log of calls says what the agent did.
+	log := mustRun(t, "api", "logs", "--charger", "CP-1")
+	for _, want := range []string{" local 127.0.0.1 200 plug CP-1: EV plugged in", " 200 wait CP-1: Charging\n", " 200 logs CP-1\n", " 400 fault CP-1: fault needs \"code\"", " 200 unplug CP-1: "} {
 		if !strings.Contains(log, want) {
 			t.Errorf("api logs lacks %q:\n%s", want, log)
 		}
