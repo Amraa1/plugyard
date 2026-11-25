@@ -1,0 +1,7 @@
+# What the image is not built from.
+.git
+.github
+dist
+docs
+examples
+*.md

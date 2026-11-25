@@ -1,0 +1,17 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/Amraa1/plugyard/main/schemas/site.schema.json
+#
+# A site is a group of chargers that start and stop together.
+#
+#   plugyard site up        start the chargers and show their log; Ctrl+C stops them
+#   plugyard ps             from a second terminal: every charger and its connectors
+name: my-site
+
+csms:
+  # The charge point ID is appended: CP-1 connects to <url>/CP-1.
+  url: ${CSMS_URL:-ws://localhost:9000/ocpp}
+
+chargers:
+  fast:
+    model: ./Chargerfile
+    count: 3
+    id: "CP-{n}"               # CP-1, CP-2, CP-3

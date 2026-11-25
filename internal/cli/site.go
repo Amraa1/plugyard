@@ -12,6 +12,8 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/Amraa1/plugyard/internal/api"
+	"github.com/Amraa1/plugyard/internal/buildinfo"
 	"github.com/Amraa1/plugyard/internal/charger"
 	"github.com/Amraa1/plugyard/internal/control"
 	"github.com/Amraa1/plugyard/internal/datadir"
@@ -102,6 +104,7 @@ func newSiteUp() *cobra.Command {
 		yes         bool
 		speed       float64
 		connectRate float64
+		apiListen   string
 	)
 
 	cmd := &cobra.Command{
@@ -113,9 +116,16 @@ func newSiteUp() *cobra.Command {
 			"instead.\n\n" +
 			"When the file has changed so that saved state would be lost, for example\n" +
 			"because a charger was removed from it, the affected chargers are listed\n" +
-			"and nothing happens until you agree. --yes agrees in advance.",
+			"and nothing happens until you agree. --yes agrees in advance.\n\n" +
+			"--api <address> also serves the API (see \"plugyard api\") for as long as\n" +
+			"the site runs, which suits a container that is to run one command. It is\n" +
+			"the same API as \"plugyard api up\" starts, and the same rules hold: an\n" +
+			"address other machines can reach needs a token first.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			if apiListen != "" && detach {
+				return &UsageError{Err: errors.New("--api serves the API while the site runs in the foreground; with -d, start it with \"plugyard api up -d\"")}
+			}
 			sf, err := loadSiteFile(file)
 			if err != nil {
 				return err
@@ -172,6 +182,30 @@ func newSiteUp() *cobra.Command {
 				return nil
 			}
 
+			if apiListen != "" {
+				server, err := api.Serve(api.Config{
+					DataDir: dir,
+					Listen:  apiListen,
+					Backend: apiBackend{},
+					Version: buildinfo.Version(),
+					Out:     out,
+				})
+				if err != nil {
+					st.Close()
+					return err
+				}
+				defer server.Close()
+				announceAPI(cmd, server, dir)
+				// "plugyard api down" stops the API and leaves the site.
+				go func() {
+					select {
+					case <-server.Stopped():
+						server.Close()
+					case <-server.Done():
+					}
+				}()
+			}
+
 			fmt.Fprintf(out, "Starting site %s with %s\n", sf.Name, countChargers(count))
 			passwords := filePasswords(sf)
 			return serveSaved(cmd.Context(), dir, st, out, true, func(id string) string { return passwords[id] })
@@ -183,6 +217,7 @@ func newSiteUp() *cobra.Command {
 	cmd.Flags().BoolVarP(&yes, "yes", "y", false, "reset or delete saved state that no longer fits the files, without asking")
 	cmd.Flags().Float64Var(&speed, "speed", 1, "multiply the rate of EV charging and energy accumulation")
 	cmd.Flags().Float64Var(&connectRate, "connect-rate", 0, "most new connections to open per second; 0 means no limit")
+	cmd.Flags().StringVar(&apiListen, "api", "", "also serve the API on this address, such as 0.0.0.0:7070, while the site runs")
 	return cmd
 }
 

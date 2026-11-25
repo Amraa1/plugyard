@@ -1,0 +1,22 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/Amraa1/plugyard/main/schemas/site.schema.json
+#
+# The site of the plugyard image when no other is mounted at /site: three
+# chargers, to try a CSMS with.
+#
+#   docker run -e CSMS_URL=ws://host.docker.internal:9000/ocpp amraa1/plugyard
+#
+# To run your own chargers, mount a folder with your site.yaml and its
+# Chargerfiles at /site.
+name: plugyard
+
+csms:
+  # The charge point ID is appended: CP-1 connects to <url>/CP-1.
+  url: ${CSMS_URL:-ws://host.docker.internal:9000/ocpp}
+  # Only for a CSMS that asks for one, over wss://.
+  password: ${CSMS_PASSWORD:-}
+
+chargers:
+  fast:
+    model: ./Chargerfile
+    count: 3
+    id: "CP-{n}"               # CP-1, CP-2, CP-3

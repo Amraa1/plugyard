@@ -1,0 +1,42 @@
+# plugyard on a server: the chargers of the site file in this folder, and the
+# API for those who have no shell here.
+#
+# Before the first start, make a token, since the API is to be reached from
+# other machines and refuses to listen for them without one:
+#
+#   docker compose run --rm plugyard api token create mobile-team
+#
+# It prints the token once. Then:
+#
+#   docker compose up -d
+#   docker compose exec plugyard plugyard ps
+#   docker compose logs -f
+services:
+  plugyard:
+    # A full version, so that the image never changes under you.
+    image: amraa1/plugyard:0.2.0
+    command: ["site", "up", "--api", "0.0.0.0:7070"]
+    environment:
+      # Read by site.yaml. A CSMS on this server itself is reached at
+      # host.docker.internal, not at localhost.
+      CSMS_URL: ws://host.docker.internal:9000/ocpp
+    extra_hosts:
+      # Makes host.docker.internal work on Linux too.
+      - "host.docker.internal:host-gateway"
+    volumes:
+      # This folder: site.yaml and its Chargerfiles. plugyard only reads it.
+      - ./:/site:ro
+      # Saved chargers, logs and tokens. Without it every restart makes new
+      # chargers with meters at zero.
+      - plugyard-data:/data
+    ports:
+      # Put a reverse proxy with HTTPS in front before this leaves the
+      # server's own network: tokens travel unencrypted otherwise.
+      - "7070:7070"
+    # Comes back after a crash and after the server restarts.
+    restart: unless-stopped
+    # Time to end transactions with StopTransaction before Docker cuts it.
+    stop_grace_period: 30s
+
+volumes:
+  plugyard-data:

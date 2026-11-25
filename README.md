@@ -23,6 +23,7 @@ Either one downloads the latest release for your system, checks it against the r
 Other ways:
 
 - **With Go 1.26 or newer:** `go install github.com/Amraa1/plugyard@latest`
+- **With Docker:** `docker pull amraa1/plugyard`, see [In a container](#in-a-container)
 - **By hand:** download the archive for your system from the [releases page](https://github.com/Amraa1/plugyard/releases/latest), unpack it, and put `plugyard` somewhere on your PATH. Builds exist for Windows, Linux and macOS, each for x86-64 and ARM64.
 
 The programs are not code-signed. If you download one by hand, Windows SmartScreen may say it is unrecognized (choose "More info", then "Run anyway"), and macOS may refuse to open it until you run `xattr -d com.apple.quarantine ./plugyard`. The install scripts and `go install` do not trigger these warnings.
@@ -407,6 +408,34 @@ curl -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/jso
 - `plugyard api spec` prints the full description as an OpenAPI document, and `plugyard api down` stops the API.
 
 The details are in [docs/SPEC.md](docs/SPEC.md), section 14.
+
+## In a container
+
+plugyard is on Docker Hub as [`amraa1/plugyard`](https://hub.docker.com/r/amraa1/plugyard). To try your CSMS against three chargers, with nothing to install and no files:
+
+```sh
+docker run --rm -e CSMS_URL=ws://host.docker.internal:9000/ocpp amraa1/plugyard
+```
+
+On a server, where the chargers are to stay and others are to reach the API, use [examples/docker/compose.yaml](examples/docker/compose.yaml). Copy it beside your `site.yaml`, then:
+
+```sh
+docker compose run --rm plugyard api token create mobile-team   # prints the token, once
+docker compose up -d
+docker compose exec plugyard plugyard ps
+```
+
+| In the container | Holds | Give it |
+|---|---|---|
+| `/site` | `site.yaml` and its Chargerfiles | Your folder, mounted there |
+| `/data` | Saved chargers, logs and API tokens | A volume, or the chargers start from zero on every restart |
+| Port `7070` | The API | A published port, behind HTTPS |
+
+- **Everything after the image's name goes to `plugyard`**, so `amraa1/plugyard site up --speed 60 --api 0.0.0.0:7070` works as it would in a terminal. `--api` serves the API for as long as the site runs.
+- **A CSMS on the same server is at `host.docker.internal`**, not at `localhost`, which inside a container is the container itself.
+- **The image has no shell and does not run as root.** `docker compose exec plugyard plugyard <command>` runs any plugyard command in it.
+- **It comes back by itself** after a crash or a reboot of the server, with `restart: unless-stopped` in the compose file.
+- **To update, change the version of the image** in the compose file and run `docker compose up -d`. Pin a full version such as `0.2.0`; `latest` changes under you.
 
 ## How many chargers
 

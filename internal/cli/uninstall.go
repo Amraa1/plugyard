@@ -113,6 +113,9 @@ func newUninstall() *cobra.Command {
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			ctx, out := cmd.Context(), cmd.OutOrStdout()
+			if inContainer() {
+				return errors.New("plugyard runs from a container image here. Remove the container, and its data volume if you want the saved chargers gone, with Docker instead")
+			}
 
 			dataDir, err := datadir.Path()
 			if err != nil {
