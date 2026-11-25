@@ -400,6 +400,8 @@ curl -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/jso
 | List every charger | `GET /v1/chargers` |
 | See everything about one | `GET /v1/chargers/FAST-1` |
 | Plug in, unplug, tap, fault, clear, go offline or online, reboot, fail | `POST /v1/chargers/FAST-1/<action>`, with the options as JSON |
+| Wait until a charger is in a state, in place of a guessed pause | `GET /v1/chargers/FAST-1/wait?state=Charging` |
+| Read the events and OCPP messages of a charger | `GET /v1/chargers/FAST-1/logs?since=10m` |
 
 - **It listens on this machine only** unless you say otherwise, and it refuses to listen anywhere else until a token exists.
 - **Each token has a name**, can be limited to one site with `--site`, and can be `--read-only`. `plugyard api logs --charger FAST-1` shows who did what to a charger.

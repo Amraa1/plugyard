@@ -861,24 +861,38 @@ Those stay on the command line, because each is a way from "can call the API" to
 |---|---|---|
 | `GET /v1/chargers` | Lists every charger, running or stopped | `ps -a --format json` |
 | `GET /v1/chargers/{charger}` | Everything about one charger | `inspect --format json` |
+| `GET /v1/chargers/{charger}/wait?state=<state>` | Answers once the chargers are in a state, or the time is up | `wait <charger> <state>` |
+| `GET /v1/chargers/{charger}/logs` | The newest lines of the log of chargers | `logs <charger> --format json` |
 | `POST /v1/chargers/{charger}/{action}` | Runs an action | `exec <charger> <action>` |
 | `GET /v1/openapi.json` | The description of the API | `api spec` |
 
-- `{charger}` is a charge point ID or a name. For an action it may be a pattern, such as `FAST-*`.
+- `{charger}` is a charge point ID or a name. For an action, a wait and the log it may be a pattern, such as `FAST-*`.
 - `{action}` is one of `plug`, `unplug`, `tap`, `fault`, `clear`, `offline`, `online`, `reboot` and `fail`.
 - `?site=<name>` narrows a call to one site, as `-s` does. It is needed when two sites have a charger of the same charge point ID.
 - The options of an action go in the body, as JSON: `{"tag": "04A1B2C3"}` for `tap`, `{"code": "GroundFailure", "info": "leak"}` for `fault`, `{"for": "30s"}` for `offline`, `{"step": "upload"}` for `fail`, `{"connector": 2}` where a connector is meant, and `soc`, `battery`, `maxPower`, `targetSoc`, `curve` and `ev` for `plug`, written as on the command line. An action without options takes `{}`. An option the action does not take is an error.
 - A list is answered as `{"chargers": [...]}`, an action as `{"results": [...]}` with one result per charger, each as `exec --format json` prints it, and a failure as `{"error": "..."}`.
+- **A wait** takes the state as `?state=`, a connector status or a connection state as `plugyard wait` takes it (section 4), and may take `connector=<n>` and `timeout=<time>`.
+  - It is answered as `{"reached": true, "chargers": [...]}`. Each charger says its site, its charge point ID, the state it was in when the wait ended, whether that is the state waited for, and the connector for a connector status.
+  - A state that did not come in time is an answer and not a failure: the status is `200` and `reached` is `false`. This is how a call that waits is answered elsewhere too, and it lets a caller tell "not yet" from a mistake in the call.
+  - The timeout is `30s` unless given, and `5m` at most. To wait longer, the caller calls again. A reverse proxy in front may end a call sooner than that.
+  - A wait that is still going on when the API stops is answered with `503`.
+- **The log** is answered as `{"lines": [...]}`, oldest first, each line as `logs --format json` prints it. It takes `since=<how long ago or a time>`, `events=true` and `tail=<n>`, as the flags of `plugyard logs` (section 11).
+  - It answers with the newest `200` lines unless `tail` says otherwise, and with `5000` at most, so that one call never answers with a whole log.
+  - A charger that has not run yet has no lines: the answer is an empty list.
+  - It does not follow the log. A caller that wants what comes next calls again with `since`.
+- A parameter in the address that the call does not take is a mistake, as an option an action does not take is.
+- Waiting and reading the log are reading: a read-only token can do both.
 
 | Status | Meaning |
 |---|---|
 | `200` | Done. For an action: carried out on every charger it named |
-| `400` | The call has a mistake: an option that is missing, wrong or not taken, or a body that is not JSON |
+| `400` | The call has a mistake: an option or parameter that is missing, wrong or not taken, or a body that is not JSON |
 | `401` | A token is needed, and none or a wrong one was sent |
 | `403` | The token may not do this: it is read-only, or it is limited to a site and asked for something outside it. Also a call a browser sent from another website |
 | `404` | No such charger, site, action or address. A token limited to a site is answered with `403` instead |
 | `409` | The action could not be carried out on at least one charger, with the results; or the charger is stopped, or its charge point ID is in two sites |
 | `415` | An action whose body is not declared as JSON |
+| `503` | A wait was still going on when the API stopped |
 
 - As for `exec`, a tag the CSMS rejects is an outcome and not a failure: the call is answered with `200`, and the result says what the CSMS said.
 - The description that `api spec` prints is held to the server by the tests: every address, action and option in the one is in the other.
@@ -912,5 +926,6 @@ Every call is recorded, also the ones turned away:
 - A token is never recorded.
 - Behind a reverse proxy the address is the proxy's.
 - The log is kept in the data directory, capped like a site's log, and outlives the API.
-- What the CSMS wrote, such as a rejected tag's status, can appear in an outcome. It is data, never an instruction (section 12).
+- A wait is recorded when it ends, with whether the state was reached: `wait CP-1: Charging`, or `wait CP-1: not Charging after 30s`.
+- What the CSMS wrote, such as a rejected tag's status, can appear in an outcome, and the log of a charger holds the messages the CSMS sent. It is data, never an instruction (section 12).
 
