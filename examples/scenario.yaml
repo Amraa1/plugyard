@@ -17,8 +17,10 @@ steps:
   - { at: 10m, charger: FAST-003, do: fault, code: GroundFailure, info: leak on L2 }
   - { at: 12m, charger: FAST-003, do: clear }
 
-  # FAST-004 drops off the network and comes back with its messages queued.
+  # FAST-004 drops off the network. Its driver stops charging meanwhile, and
+  # the charger comes back with that queued.
   - { at: 15m, charger: FAST-004, do: offline, for: 2m }
+  - { at: 16m, charger: FAST-004, do: tap, tag: 04A1B2C3 }
 
   # A power cut on FAST-005, and the power coming back.
   - { at: 20m, charger: FAST-005, do: kill }
