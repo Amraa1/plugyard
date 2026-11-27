@@ -63,8 +63,8 @@ func checkSiteFile(sf *sitefile.Site) ([]string, error) {
 	var members []site.Member
 	for _, entry := range sf.Entries {
 		for _, spec := range entry.Chargers {
-			m := site.Member{ID: spec.ID, Model: spec.Model, CSMS: spec.CSMS}
-			if _, err := charger.New(charger.Config{ID: m.ID, Model: m.Model, CSMS: m.CSMS}); err != nil {
+			m := site.Member{ID: spec.ID, Model: spec.Model, CSMS: spec.CSMS, State: spec.State}
+			if _, err := charger.New(charger.Config{ID: m.ID, Model: m.Model, CSMS: m.CSMS, Declared: m.State}); err != nil {
 				return nil, &UsageError{Err: fmt.Errorf("chargers.%s: %w", entry.Name, err)}
 			}
 			members = append(members, m)
@@ -91,6 +91,7 @@ func desiredFromFile(sf *sitefile.Site) []desired {
 				InsecureSkipVerify: c.CSMS.InsecureSkipVerify,
 				HasPassword:        c.CSMS.Password != "",
 				EV:                 c.EV,
+				State:              c.State,
 			},
 		})
 	}
@@ -114,6 +115,9 @@ func newSiteUp() *cobra.Command {
 			"them, and start them. The site runs in the foreground showing the log of\n" +
 			"every charger; press Ctrl+C to stop it. With -d it runs in the background\n" +
 			"instead.\n\n" +
+			"A charger entry with a \"state\" block declares the state its chargers are\n" +
+			"in each time they power on, whatever was saved: offline, stopped, faulted\n" +
+			"or with an EV plugged in. One declared stopped is created and left off.\n\n" +
 			"When the file has changed so that saved state would be lost, for example\n" +
 			"because a charger was removed from it, the affected chargers are listed\n" +
 			"and nothing happens until you agree. --yes agrees in advance.\n\n" +
@@ -172,6 +176,13 @@ func newSiteUp() *cobra.Command {
 			}
 
 			out := cmd.OutOrStdout()
+			if powered, total, err := powerOnAll(st); err != nil || powered == 0 {
+				st.Close()
+				if err == nil {
+					fmt.Fprint(out, nonePoweredOn(sf.Name, total))
+				}
+				return err
+			}
 			if detach {
 				st.Close()
 				info, err := startBackground(cmd.Context(), dir, sf.Name)
@@ -330,7 +341,8 @@ func newSiteStart() *cobra.Command {
 		Short: "Power on the chargers of a stopped site",
 		Long: "Start every charger of a stopped site again, in the background, exactly\n" +
 			"as it was saved. No file is read: to apply changes made to the site file,\n" +
-			"use \"plugyard site up\" instead.",
+			"use \"plugyard site up\" instead. A charger whose declared state is\n" +
+			"stopped stays off.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			name, err := siteNameFromFlags(file, siteName)
@@ -353,12 +365,17 @@ func newSiteStart() *cobra.Command {
 			if err == nil && meta.Down {
 				err = fmt.Errorf("site %q was taken down; bring it back with \"plugyard site up\"", name)
 			}
+			powered, total := 0, 0
 			if err == nil {
-				err = st.SetPower(nil)
+				powered, total, err = powerOnAll(st)
 			}
 			st.Close()
 			if err != nil {
 				return err
+			}
+			if powered == 0 {
+				fmt.Fprint(cmd.OutOrStdout(), nonePoweredOn(name, total))
+				return nil
 			}
 
 			info, err := startBackground(cmd.Context(), dir, name)
@@ -591,6 +608,10 @@ func newSiteValidate() *cobra.Command {
 				}
 				if first.Name != "" {
 					row = append(row, plain("name "+first.Name))
+				}
+				// Every charger of an entry has the same declared state.
+				if d := declaredView(first.State); d != nil {
+					row = append(row, plain("declared: "+describeDeclared(d)))
 				}
 				rows = append(rows, row)
 			}

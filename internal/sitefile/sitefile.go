@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -74,6 +75,9 @@ type Charger struct {
 	// EV names the EV preset used when a plug does not name one, or is
 	// empty.
 	EV string
+	// State is the charger's declared state, or nil when the file declares
+	// none.
+	State *charger.Declared
 }
 
 // Chargers returns every charger of the site, in file order.
@@ -149,6 +153,23 @@ type fileEntry struct {
 	EV     string         `yaml:"ev"`
 	Config map[string]any `yaml:"config"`
 	CSMS   *fileCSMS      `yaml:"csms"`
+	State  yaml.Node      `yaml:"state"`
+}
+
+type fileState struct {
+	Connection string    `yaml:"connection"`
+	Connectors yaml.Node `yaml:"connectors"`
+}
+
+type fileConnector struct {
+	EV    string    `yaml:"ev"`
+	Fault yaml.Node `yaml:"fault"`
+}
+
+type fileFault struct {
+	Code       string `yaml:"code"`
+	Info       string `yaml:"info"`
+	VendorCode string `yaml:"vendorCode"`
 }
 
 // Load reads and validates the site file at path, together with the
@@ -347,6 +368,18 @@ func Parse(data []byte, baseDir string, lookupEnv func(string) (string, bool)) (
 			}
 		}
 
+		state, stateProblems := parseState(&fe.State, m, func(preset string) (ev.Params, bool) {
+			if _, ok := f.EVs[preset]; !ok {
+				return ev.Params{}, false
+			}
+			// As for a plug: the built-in EV, then the entry's default
+			// preset, then the preset that is named.
+			return ev.Defaults().With(site.EVs[fe.EV]).With(site.EVs[preset]), true
+		})
+		for _, err := range stateProblems {
+			problem("%s: state: %v", at, err)
+		}
+
 		csms, err := resolveCSMS(f.CSMS, fe.CSMS)
 		if err != nil {
 			problem("%s: %v", at, err)
@@ -370,7 +403,7 @@ func Parse(data []byte, baseDir string, lookupEnv func(string) (string, bool)) (
 				continue
 			}
 			seen[id] = entryName
-			entry.Chargers = append(entry.Chargers, Charger{ID: id, Name: chargerName, Model: m, CSMS: csms, EV: fe.EV})
+			entry.Chargers = append(entry.Chargers, Charger{ID: id, Name: chargerName, Model: m, CSMS: csms, EV: fe.EV, State: state})
 		}
 		site.Entries = append(site.Entries, entry)
 	}
@@ -477,6 +510,92 @@ func parseEV(fe fileEV) (ev.Overrides, error) {
 		return o, err
 	}
 	return o, nil
+}
+
+// parseState reads the declared state of an entry's chargers, and lists
+// what is wrong with it. It returns nil when nothing is declared. m is the
+// entry's model, or nil when that could not be read, and evParams works out
+// the EV a preset stands for on this entry.
+func parseState(node *yaml.Node, m *model.Model, evParams func(preset string) (ev.Params, bool)) (*charger.Declared, []error) {
+	if node.Kind == 0 {
+		return nil, nil
+	}
+	var fs fileState
+	if err := strictDecode(node, &fs); err != nil {
+		return nil, []error{err}
+	}
+
+	var problems []error
+	problem := func(format string, args ...any) {
+		problems = append(problems, fmt.Errorf(format, args...))
+	}
+	declared := &charger.Declared{Connection: fs.Connection}
+
+	switch fs.Connectors.Kind {
+	case 0:
+	case yaml.MappingNode:
+		for i := 0; i+1 < len(fs.Connectors.Content); i += 2 {
+			key, value := fs.Connectors.Content[i], fs.Connectors.Content[i+1]
+			id, err := strconv.Atoi(key.Value)
+			if err != nil || id < 0 {
+				problem("connectors.%s: a connector is named by its number, such as 1; 0 is the charger as a whole", key.Value)
+				continue
+			}
+			at := "connectors." + key.Value
+
+			var fk fileConnector
+			if err := strictDecode(value, &fk); err != nil {
+				problem("%s: %v", at, err)
+				continue
+			}
+			k := charger.DeclaredConnector{ID: id}
+			if fk.EV != "" {
+				params, ok := evParams(fk.EV)
+				if ok {
+					k.EV = &charger.DeclaredEV{Preset: fk.EV, Params: params}
+				} else {
+					problem("%s: ev: there is no EV preset named %q", at, fk.EV)
+				}
+			}
+			fault, err := parseFault(&fk.Fault)
+			if err != nil {
+				problem("%s: fault: %v", at, err)
+			}
+			k.Fault = fault
+			declared.Connectors = append(declared.Connectors, k)
+		}
+		sort.SliceStable(declared.Connectors, func(i, j int) bool {
+			return declared.Connectors[i].ID < declared.Connectors[j].ID
+		})
+	default:
+		problem("connectors: want connectors by number, such as { 1: { ev: compact } }")
+	}
+
+	if m != nil {
+		problems = append(problems, declared.Check(m)...)
+	}
+	if declared.Empty() {
+		declared = nil
+	}
+	return declared, problems
+}
+
+// parseFault reads a declared fault: an error code, or a map with the code
+// and what goes with it. It returns nil when none is declared.
+func parseFault(node *yaml.Node) (*charger.Fault, error) {
+	switch {
+	case node.Kind == 0, node.Kind == yaml.ScalarNode && node.Tag == "!!null":
+		return nil, nil
+	case node.Kind == yaml.ScalarNode:
+		return &charger.Fault{Code: node.Value}, nil
+	case node.Kind == yaml.MappingNode:
+		var ff fileFault
+		if err := strictDecode(node, &ff); err != nil {
+			return nil, err
+		}
+		return &charger.Fault{Code: ff.Code, Info: ff.Info, VendorCode: ff.VendorCode}, nil
+	}
+	return nil, errors.New("want an error code, such as GroundFailure, or a map with code, info and vendorCode")
 }
 
 // parseCurve reads a charge curve: the name of a built-in one, or a list of

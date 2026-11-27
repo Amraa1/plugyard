@@ -69,7 +69,7 @@ func TestFaultEndsTheTransactionAndClearRecovers(t *testing.T) {
 
 	// The fault outlives a restart.
 	saved := d.waitSaved(t, "the fault", func(st *charger.State) bool { return st.Connectors[0].Fault != nil })
-	if snap := saved.Snapshot("CP-1", twoConnectorModel()).Connectors[0]; snap.Status != v16.StatusFaulted || snap.ErrorCode != "GroundFailure" {
+	if snap := saved.Snapshot("CP-1", twoConnectorModel(), nil).Connectors[0]; snap.Status != v16.StatusFaulted || snap.ErrorCode != "GroundFailure" {
 		t.Errorf("the stopped charger shows connector 1 as %+v", snap)
 	}
 

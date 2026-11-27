@@ -303,7 +303,7 @@ func TestChangeAvailability(t *testing.T) {
 	saved := d.waitSaved(t, "both connectors as unavailable", func(st *charger.State) bool {
 		return st.Connectors[0].Inoperative && st.Connectors[1].Inoperative
 	})
-	if snap := saved.Snapshot("CP-1", twoConnectorModel()); snap.Connectors[0].Status != v16.StatusUnavailable {
+	if snap := saved.Snapshot("CP-1", twoConnectorModel(), nil); snap.Connectors[0].Status != v16.StatusUnavailable {
 		t.Errorf("the stopped charger shows connector 1 as %s", snap.Connectors[0].Status)
 	}
 

@@ -122,7 +122,7 @@ func (srv *Server) handleInspect(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "the site has no such charger", http.StatusNotFound)
 		return
 	}
-	writeJSON(w, Inspection{Model: member.Model, CSMSURL: member.CSMS.URL, State: state})
+	writeJSON(w, Inspection{Model: member.Model, CSMSURL: member.CSMS.URL, State: state, Declared: member.State})
 }
 
 func (srv *Server) handleExec(w http.ResponseWriter, r *http.Request) {

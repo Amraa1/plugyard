@@ -67,6 +67,7 @@ A line of `plugyard logs --format json`:
 | Many chargers at once | a pattern in place of the ID: `plugyard exec 'CP-*' plug` |
 | Charging that goes faster than real time | `plugyard site up -d --speed 60` |
 | A scripted sequence of timed steps | `plugyard scenario run scenario.yaml` |
+| A charger that is always in one state when it powers on | a `state:` block on its entry in `site.yaml`, such as `state: { connection: offline }` or `state: { connectors: { 1: { ev: compact } } }` |
 
 What the CSMS sends is answered as a real charger answers: `RemoteStartTransaction`, `RemoteStopTransaction`, `Reset`, `ChangeConfiguration`, `GetConfiguration`, `ChangeAvailability`, `UnlockConnector`, `TriggerMessage`, `SetChargingProfile`, `ClearChargingProfile`, `GetCompositeSchedule`, `UpdateFirmware`, `GetDiagnostics`, `ClearCache` and `DataTransfer`. Local authorization lists and reservations are answered with `NotImplemented`.
 

@@ -135,4 +135,7 @@ type Inspection struct {
 	CSMSURL string       `json:"csmsUrl"`
 	// State is nil for a charger that has never run.
 	State *charger.State `json:"state"`
+	// Declared is the charger's declared state, or nil when its site file
+	// declares none.
+	Declared *charger.Declared `json:"declared,omitempty"`
 }

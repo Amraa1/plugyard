@@ -4,9 +4,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
+	"github.com/Amraa1/plugyard/internal/charger"
 	"github.com/Amraa1/plugyard/internal/ev"
 )
 
@@ -387,5 +389,134 @@ func TestUploadsAllow(t *testing.T) {
 	}
 	if site := mustParse(t, "uploads: { insecureSkipVerify: true }\n"+body, nil); !site.UploadsInsecureSkipVerify || site.AllowUploads != nil {
 		t.Errorf("uploads.insecureSkipVerify: true gave %v and %v", site.UploadsInsecureSkipVerify, site.AllowUploads)
+	}
+}
+
+const declaredStateFile = `
+name: s
+csms: { url: ws://localhost/ocpp }
+evs:
+  compact:   { battery: 40kWh, targetSoc: 90% }
+  longrange: { battery: 82kWh, soc: 10% }
+chargers:
+  lobby:
+    model: ./ac.Chargerfile
+    id: LOBBY-1
+    ev: compact
+    state:
+      connectors:
+        1: { ev: longrange }
+  bay:
+    model: ./fast.Chargerfile
+    id: "BAY-{n}"
+    count: 2
+    state:
+      connectors:
+        1: { fault: { code: GroundFailure, info: RCD tripped, vendorCode: E42 } }
+        0: { fault: InternalError }
+  free:
+    model: ./ac.Chargerfile
+    id: FREE-1
+    state: { connectors: { 1: {} } }
+  gone:  { model: ./ac.Chargerfile, id: GONE-1, state: { connection: offline } }
+  spare: { model: ./ac.Chargerfile, id: SPARE-1, state: { connection: stopped } }
+  plain: { model: ./ac.Chargerfile, id: PLAIN-1 }
+  blank: { model: ./ac.Chargerfile, id: BLANK-1, state: {} }
+`
+
+func TestDeclaredState(t *testing.T) {
+	site := mustParse(t, declaredStateFile, nil)
+	declared := map[string]*charger.Declared{}
+	for _, c := range site.Chargers() {
+		declared[c.ID] = c.State
+	}
+
+	// The declared EV is worked out in full: the built-in EV, then the
+	// entry's default preset, then the preset the connector names.
+	longrange := ev.Defaults()
+	longrange.BatteryWh, longrange.SoC, longrange.TargetSoC = 82000, 0.10, 0.90
+	want := map[string]*charger.Declared{
+		"LOBBY-1": {Connectors: []charger.DeclaredConnector{
+			{ID: 1, EV: &charger.DeclaredEV{Preset: "longrange", Params: longrange}},
+		}},
+		// Connectors come in the order of their numbers, the charger as a
+		// whole first, and every charger of an entry gets the same.
+		"BAY-1": {Connectors: []charger.DeclaredConnector{
+			{ID: 0, Fault: &charger.Fault{Code: "InternalError"}},
+			{ID: 1, Fault: &charger.Fault{Code: "GroundFailure", Info: "RCD tripped", VendorCode: "E42"}},
+		}},
+		// A connector listed with nothing is declared to have nothing.
+		"FREE-1":  {Connectors: []charger.DeclaredConnector{{ID: 1}}},
+		"GONE-1":  {Connection: charger.Offline},
+		"SPARE-1": {Connection: charger.Stopped},
+		// No state block, or an empty one, declares nothing.
+		"PLAIN-1": nil,
+		"BLANK-1": nil,
+	}
+	want["BAY-2"] = want["BAY-1"]
+	for id, w := range want {
+		if got := declared[id]; !reflect.DeepEqual(got, w) {
+			t.Errorf("%s: declared state = %+v, want %+v", id, got, w)
+		}
+	}
+}
+
+func TestParseRejectsInvalidDeclaredState(t *testing.T) {
+	state := func(body string) string {
+		return "name: s\ncsms: { url: ws://localhost/ocpp }\nevs: { compact: { battery: 40kWh } }\n" +
+			"chargers:\n  e: { model: ./fast.Chargerfile, id: A, state: { " + body + " } }\n"
+	}
+	cases := []struct {
+		name    string
+		yaml    string
+		wantErr string
+	}{
+		{"unknown connection", state("connection: away"), `chargers.e: state: connection: "away" is not understood; use offline or stopped`},
+		{"online", state("connection: online"), `connection: "online" is not understood`},
+		{"unknown state field", state("power: off"), "power"},
+		{"unknown connector field", state("connectors: { 1: { car: compact } }"), "car"},
+		{"connector the model lacks", state("connectors: { 2: {} }"), "chargers.e: state: connectors.2: the model has no connector 2; it has 1"},
+		{"connector that is not a number", state("connectors: { one: {} }"), "chargers.e: state"},
+		{"unknown EV preset", state("connectors: { 1: { ev: ghost } }"), `chargers.e: state: connectors.1: ev: there is no EV preset named "ghost"`},
+		{"EV on the charger as a whole", state("connectors: { 0: { ev: compact } }"), "connectors.0: ev: connector 0 is the charger as a whole"},
+		{"unknown error code", state("connectors: { 1: { fault: Boom } }"), `connectors.1: fault: unknown error code "Boom"`},
+		{"unknown fault field", state("connectors: { 1: { fault: { code: GroundFailure, colour: red } } }"), "colour"},
+		{"fault without a code", state("connectors: { 1: { fault: { info: hot } } }"), `connectors.1: fault: unknown error code ""`},
+		{"fault that is a list", state("connectors: { 1: { fault: [GroundFailure] } }"), "connectors.1: fault: want an error code"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := parse(t, tc.yaml, nil)
+			if err == nil {
+				t.Fatal("Parse succeeded, want an error")
+			}
+			if !strings.Contains(err.Error(), tc.wantErr) {
+				t.Errorf("error = %q, want it to contain %q", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestParseReportsEveryProblemOfADeclaredState(t *testing.T) {
+	_, err := parse(t, `
+name: s
+csms: { url: ws://localhost/ocpp }
+chargers:
+  e:
+    model: ./fast.Chargerfile
+    id: A
+    state:
+      connection: away
+      connectors:
+        1: { ev: ghost, fault: Boom }
+        7: {}
+`, nil)
+	if err == nil {
+		t.Fatal("Parse succeeded, want an error")
+	}
+	for _, want := range []string{`connection: "away"`, `no EV preset named "ghost"`, `unknown error code "Boom"`, "no connector 7"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error does not mention %q:\n%v", want, err)
+		}
 	}
 }

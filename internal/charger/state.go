@@ -79,43 +79,66 @@ type QueuedMessage struct {
 	TxRef int `json:"txRef,omitempty"`
 }
 
-// Snapshot describes a powered-off charger from its saved state: each
-// connector shows the status it will report when the charger starts. A nil
-// state describes a charger that has never run.
-func (s *State) Snapshot(chargePointID string, m *model.Model) Snapshot {
+// Snapshot describes a powered-off charger from its saved state and its
+// declared state: each connector shows the status it will report when the
+// charger starts. A nil state describes a charger that has never run, and a
+// nil declared state one whose site file declares nothing.
+func (s *State) Snapshot(chargePointID string, m *model.Model, declared *Declared) Snapshot {
 	snap := Snapshot{ChargePointID: chargePointID, Connection: Stopped}
+
+	// The charger as a whole.
+	var whole ConnectorState
 	if s != nil {
-		switch {
-		case s.Fault != nil:
-			snap.Connectors = append(snap.Connectors, ConnectorSnapshot{Status: v16.StatusFaulted, ErrorCode: s.Fault.Code})
-		case s.Inoperative:
-			snap.Connectors = append(snap.Connectors, ConnectorSnapshot{Status: v16.StatusUnavailable})
-		}
+		whole.Fault, whole.Inoperative = s.Fault, s.Inoperative
 	}
+	if dk := declared.connector(0); dk != nil {
+		whole.Fault = dk.Fault
+	}
+	switch {
+	case whole.Fault != nil:
+		snap.Connectors = append(snap.Connectors, ConnectorSnapshot{Status: v16.StatusFaulted, ErrorCode: whole.Fault.Code})
+	case whole.Inoperative:
+		snap.Connectors = append(snap.Connectors, ConnectorSnapshot{Status: v16.StatusUnavailable})
+	}
+
 	for _, mc := range m.Connectors {
-		ks := ConnectorSnapshot{ID: mc.ID, Status: v16.StatusAvailable}
+		saved := ConnectorState{ID: mc.ID}
 		if s != nil {
-			for _, saved := range s.Connectors {
-				if saved.ID != mc.ID {
-					continue
-				}
-				ks.MeterWh = float64(int(saved.MeterWh))
-				if saved.EV != nil {
-					soc := saved.EV.SoC
-					ks.SoC = &soc
-				}
-				// An open transaction ends when the charger starts.
-				switch {
-				case saved.Fault != nil:
-					ks.Status, ks.ErrorCode = v16.StatusFaulted, saved.Fault.Code
-				case saved.Inoperative:
-					ks.Status = v16.StatusUnavailable
-				case saved.EV != nil && (saved.Finishing || saved.Tx != nil):
-					ks.Status = v16.StatusFinishing
-				case saved.EV != nil:
-					ks.Status = v16.StatusPreparing
+			for _, candidate := range s.Connectors {
+				if candidate.ID == mc.ID {
+					saved = candidate
 				}
 			}
+		}
+		// An open transaction ends when the charger starts.
+		finishing := saved.EV != nil && (saved.Finishing || saved.Tx != nil)
+		// A declared EV is a new arrival, which on some models starts a
+		// transaction.
+		arriving := false
+		if dk := declared.connector(mc.ID); dk != nil {
+			saved.Fault, saved.EV, finishing = dk.Fault, nil, false
+			if dk.EV != nil {
+				saved.EV = &ev.State{Params: dk.EV.Params, SoC: dk.EV.Params.SoC}
+				arriving = m.StartOn == model.StartOnPlug && whole.Fault == nil
+			}
+		}
+
+		ks := ConnectorSnapshot{ID: mc.ID, Status: v16.StatusAvailable, MeterWh: float64(int(saved.MeterWh))}
+		if saved.EV != nil {
+			soc := saved.EV.SoC
+			ks.SoC = &soc
+		}
+		switch {
+		case saved.Fault != nil:
+			ks.Status, ks.ErrorCode = v16.StatusFaulted, saved.Fault.Code
+		case saved.Inoperative:
+			ks.Status = v16.StatusUnavailable
+		case arriving:
+			ks.Status = v16.StatusCharging
+		case finishing:
+			ks.Status = v16.StatusFinishing
+		case saved.EV != nil:
+			ks.Status = v16.StatusPreparing
 		}
 		snap.Connectors = append(snap.Connectors, ks)
 	}

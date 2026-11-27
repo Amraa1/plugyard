@@ -11,3 +11,4 @@ A charger's state (configuration keys, charging profiles, meter readings, open t
 - Site files and saved state can disagree. Saved state wins for anything the CSMS changed; structural edits to a site file or Chargerfile reset only the affected chargers, after confirmation.
 - A machine shutdown during a transaction is indistinguishable from a power cut, so the charger reports the interrupted transaction with reason `PowerLoss` on the next start. `plugyard kill` exposes the same path on demand.
 - Site names must be unique per user, because they key the saved state.
+- A site file may declare state for a charger, which then wins over its saved state at every power-on (ADR 0009).

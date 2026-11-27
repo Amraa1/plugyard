@@ -225,7 +225,7 @@ func TestStateOfAChargerThatIsOff(t *testing.T) {
 
 	// A charger that has never run shows every connector as Available.
 	var none *charger.State
-	snap := none.Snapshot("CP-1", m)
+	snap := none.Snapshot("CP-1", m, nil)
 	if snap.Connection != charger.Stopped || len(snap.Connectors) != 2 || snap.Connectors[0].Status != v16.StatusAvailable {
 		t.Errorf("snapshot of a charger that never ran = %+v", snap)
 	}
@@ -235,7 +235,7 @@ func TestStateOfAChargerThatIsOff(t *testing.T) {
 		{ID: 1, MeterWh: 1234.9, EV: &ev.State{Params: ev.Defaults(), SoC: 0.5}, Finishing: true},
 		{ID: 2, EV: &ev.State{Params: ev.Defaults(), SoC: 0.2}},
 	}}
-	snap = st.Snapshot("CP-1", m)
+	snap = st.Snapshot("CP-1", m, nil)
 	if k := snap.Connectors[0]; k.Status != v16.StatusFinishing || k.MeterWh != 1234 || k.SoC == nil || *k.SoC != 0.5 {
 		t.Errorf("connector 1 = %+v", k)
 	}
