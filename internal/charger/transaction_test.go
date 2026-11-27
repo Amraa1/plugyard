@@ -3,6 +3,7 @@ package charger_test
 import (
 	"context"
 	"encoding/json"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -82,6 +83,33 @@ func statuses(t *testing.T, csms *csmstest.CSMS, connector int) []string {
 		}
 	}
 	return out
+}
+
+// waitStatuses waits until the statuses reported for a connector are exactly
+// the ones given, in order.
+func waitStatuses(t *testing.T, csms *csmstest.CSMS, connector int, want ...string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		got := statuses(t, csms, connector)
+		if slices.Equal(got, want) {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("connector %d reported %v, want %v", connector, got, want)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// finished leaves a connector Finishing: a transaction started with TAG-A
+// has ended there and the EV is still plugged in.
+func finished(t *testing.T, csms *csmstest.CSMS, r *running, connector int) {
+	t.Helper()
+	must(t)(r.Plug(ctx, connector, ev.Defaults()))
+	must(t)(r.Tap(ctx, connector, "TAG-A"))
+	must(t)(r.Tap(ctx, connector, "TAG-A"))
+	waitStatus(t, csms, connector, v16.StatusFinishing)
 }
 
 // must wraps the result of an action, failing the test if the action could
@@ -332,12 +360,8 @@ func TestSecondTapOfTheSameTagStopsTheTransaction(t *testing.T) {
 		t.Errorf("got %d Authorize calls, want 1", n)
 	}
 
-	// The EV is still plugged in, so the connector is Finishing and a new
-	// transaction cannot start until it is unplugged.
+	// The EV is still plugged in, so the connector is Finishing.
 	waitStatus(t, csms, 1, v16.StatusFinishing)
-	if _, err := r.Tap(ctx, 1, "TAG-A"); err == nil || !strings.Contains(err.Error(), "unplug the EV first") {
-		t.Errorf("tap while Finishing returned %v, want a refusal", err)
-	}
 
 	must(t)(r.Unplug(1))
 	if got := r.Snapshot().Connectors[0].Status; got != v16.StatusAvailable {
@@ -351,6 +375,61 @@ func TestSecondTapOfTheSameTagStopsTheTransaction(t *testing.T) {
 	csms.WaitForCalls(t, "CP-1", v16.ActionStartTransaction, 2)[1].Decode(t, &second)
 	if second.MeterStart != stop.MeterStop {
 		t.Errorf("second transaction has meterStart %d, want %d where the first one stopped", second.MeterStart, stop.MeterStop)
+	}
+}
+
+func TestTapOnAFinishingConnectorStartsANewTransaction(t *testing.T) {
+	csms := csmstest.Start(t)
+	r := online(t, csms, charger.Config{})
+	finished(t, csms, r, 1)
+
+	// The EV was never unplugged, and a tap starts charging again.
+	if outcome := must(t)(r.Tap(ctx, 1, "TAG-B")); outcome != "tag accepted, transaction 2 started" {
+		t.Errorf("tap outcome = %q", outcome)
+	}
+	var start v16.StartTransactionRequest
+	csms.WaitForCalls(t, "CP-1", v16.ActionStartTransaction, 2)[1].Decode(t, &start)
+	if start.ConnectorID != 1 || start.IDTag != "TAG-B" {
+		t.Errorf("second StartTransaction = %+v, want connector 1 with tag TAG-B", start)
+	}
+
+	// OCPP 1.6 has no step from Finishing to Charging: the connector goes
+	// through Preparing.
+	waitStatuses(t, csms, 1,
+		v16.StatusAvailable, v16.StatusPreparing, v16.StatusCharging,
+		v16.StatusFinishing, v16.StatusPreparing, v16.StatusCharging)
+}
+
+func TestRejectedTagLeavesAFinishingConnectorFinishing(t *testing.T) {
+	csms := csmstest.Start(t)
+	csms.Handle(v16.ActionAuthorize, func(_ string, payload json.RawMessage) (any, *ocppj.CallError) {
+		var req v16.AuthorizeRequest
+		if err := json.Unmarshal(payload, &req); err != nil {
+			return nil, &ocppj.CallError{Code: ocppj.ErrFormationViolation}
+		}
+		status := v16.AuthorizationAccepted
+		if req.IDTag == "TAG-BAD" {
+			status = "Invalid"
+		}
+		return v16.AuthorizeResponse{IDTagInfo: v16.IDTagInfo{Status: status}}, nil
+	})
+	r := online(t, csms, charger.Config{})
+	finished(t, csms, r, 1)
+
+	if outcome := must(t)(r.Tap(ctx, 1, "TAG-BAD")); outcome != "tag rejected by the CSMS (Invalid)" {
+		t.Errorf("tap outcome = %q", outcome)
+	}
+	time.Sleep(100 * time.Millisecond)
+	if n := count(csms, v16.ActionStartTransaction); n != 1 {
+		t.Errorf("got %d StartTransaction, want only the first: the second tag was rejected", n)
+	}
+	if got := r.Snapshot().Connectors[0].Status; got != v16.StatusFinishing {
+		t.Errorf("connector status = %s, want it to stay Finishing", got)
+	}
+	// Preparing is not reported for a tag that was not accepted.
+	want := []string{v16.StatusAvailable, v16.StatusPreparing, v16.StatusCharging, v16.StatusFinishing}
+	if got := statuses(t, csms, 1); !slices.Equal(got, want) {
+		t.Errorf("connector 1 reported %v, want %v", got, want)
 	}
 }
 
@@ -399,6 +478,32 @@ func TestFullEVStopsTheTransactionByDefault(t *testing.T) {
 		t.Errorf("meterStop = %d Wh, want the 600 Wh the EV had room for", stop.MeterStop)
 	}
 	waitStatus(t, csms, 1, v16.StatusFinishing)
+}
+
+func TestANewTransactionOnAFullEVEndsAtOnce(t *testing.T) {
+	csms := csmstest.Start(t)
+	r := online(t, csms, charger.Config{Speed: 3600})
+
+	params := ev.Defaults()
+	params.SoC = 0.79
+	params.TargetSoC = 0.80
+	must(t)(r.Plug(ctx, 1, params))
+	must(t)(r.Tap(ctx, 1, "TAG-A"))
+	first := stopRequest(t, csms)
+	waitStatus(t, csms, 1, v16.StatusFinishing)
+
+	// The EV is at its target and still plugged in. A new transaction
+	// starts, as the charger cannot know that before it tries, and ends
+	// with no energy delivered.
+	must(t)(r.Tap(ctx, 1, "TAG-A"))
+	var second v16.StopTransactionRequest
+	csms.WaitForCalls(t, "CP-1", v16.ActionStopTransaction, 2)[1].Decode(t, &second)
+	if second.TransactionID != 2 || second.Reason != v16.ReasonOther || second.MeterStop != first.MeterStop {
+		t.Errorf("second StopTransaction = %+v, want transaction 2 stopped with reason Other at %d Wh", second, first.MeterStop)
+	}
+	waitStatuses(t, csms, 1,
+		v16.StatusAvailable, v16.StatusPreparing, v16.StatusCharging,
+		v16.StatusFinishing, v16.StatusPreparing, v16.StatusCharging, v16.StatusFinishing)
 }
 
 func TestFullEVSuspendsWhenTheModelSaysSo(t *testing.T) {
