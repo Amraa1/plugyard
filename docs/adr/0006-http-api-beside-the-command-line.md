@@ -6,7 +6,7 @@ We chose this because of how plugyard came to be used: on a staging server, for 
 
 ## Considered options
 
-- **A standing state in the site file**: each charger entry says what it should be, such as "EV plugged in, plugged in again two minutes after every session", and plugyard keeps it so. It needs no network surface, but it only helps with states someone foresaw, and gives nobody a way to act. An API is the more general piece: a standing state can be built on it with a short script on a timer, and not the other way round.
+- **A standing state in the site file**: each charger entry says what it should be, such as "EV plugged in, plugged in again two minutes after every session", and plugyard keeps it so. It needs no network surface, but it only helps with states someone foresaw, and gives nobody a way to act. An API is the more general piece: a standing state can be built on it with a short script on a timer, and not the other way round. A narrower form was added later beside the API: declared state, which is applied when a charger powers on and not kept so in between (ADR 0009).
 - **`repeat` on a scenario.** Less new surface, but the state of the chargers then lives in a timeline, and drifts for the rest of the run when one step fails or the CSMS restarts.
 - **The API inside each site's process**, as `site up --api`. One process per site suits a container, but the command line is about chargers across every site, two sites would mean two addresses, and every charger started with `plugyard run` is a site of its own.
 - **An MCP server alone**, for AI agents. People and scripts need the same reach, and an MCP server can be laid over an HTTP API later.
