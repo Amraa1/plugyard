@@ -361,7 +361,7 @@ chargers:
 - **What the CSMS set is not declared and still persists.** A connector it made `Unavailable` stays so, and meter readings are untouched.
 - **A declared EV is a new arrival each time**: a fresh EV at the preset's starting state of charge, in place of any EV in the saved state. Its parameters are worked out as for a plug that names the preset. On a model with `startOn: plug` a transaction starts with `startTag` at power-on, and the CSMS hears of it once the charger has booted.
 - **A declared EV with `renew` is renewed when it is done**, so that its connector stays of use with nobody running `unplug` and `plug`: `1: { ev: longrange, renew: 5m }`.
-  - An EV is done when it is at its target and its connector has no transaction. One whose transaction ended before it was full is not done.
+  - An EV is done when it is at its target and its connector has no transaction. One whose transaction ended before it was full is not done: it can be charged again without unplugging (section 8).
   - The EV leaves after the `renew` time, as `unplug` does, and a fresh one arrives after the same time again, as `plug` does. The connector reports `Finishing`, `Available`, `Preparing`.
   - The time is real time, whatever the speed of the site, so that each status lasts long enough to be seen.
   - With `startOn: plug` the fresh EV starts a transaction, and the connector keeps cycling through `Charging`.
