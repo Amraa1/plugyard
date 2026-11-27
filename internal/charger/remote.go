@@ -173,10 +173,11 @@ func (c *Charger) handle(_ context.Context, action string, payload json.RawMessa
 	return nil, &ocppj.CallError{Code: ocppj.ErrNotImplemented, Description: action + " is not implemented"}
 }
 
-// free reports whether a transaction could start on a connector. The caller
-// holds c.mu.
+// free reports whether a transaction could start on a connector. One whose
+// EV stayed plugged in after its last transaction is free. The caller holds
+// c.mu.
 func (c *Charger) free(k *connector) bool {
-	return k.tx == nil && k.pending == nil && !k.finishing && c.blocked(k) == ""
+	return k.tx == nil && k.pending == nil && c.blocked(k) == ""
 }
 
 func (c *Charger) remoteStart(req v16.RemoteStartTransactionRequest) string {
@@ -203,16 +204,20 @@ func (c *Charger) remoteStart(req v16.RemoteStartTransactionRequest) string {
 			k = found
 		}
 	} else {
-		// A connector with an EV waiting comes first, then the lowest free
-		// one.
-		for _, candidate := range c.connectors {
-			if c.free(candidate) && candidate.ev != nil {
-				k = candidate
-				break
+		// A connector with an EV waiting comes first, then one whose EV
+		// stayed plugged in after its last transaction, then the lowest
+		// free one.
+		rank := func(candidate *connector) int {
+			switch {
+			case candidate.ev != nil && !candidate.finishing:
+				return 0
+			case candidate.ev != nil:
+				return 1
 			}
+			return 2
 		}
 		for _, candidate := range c.connectors {
-			if k == nil && c.free(candidate) {
+			if c.free(candidate) && (k == nil || rank(candidate) < rank(k)) {
 				k = candidate
 			}
 		}

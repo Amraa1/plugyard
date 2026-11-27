@@ -420,7 +420,7 @@ A curve must start at 0% and end at 100% state of charge, and its power share mu
 | `exec ... offline` | Network loss | The connection drops. Charging continues, and transaction messages are queued and replayed in order on `online` |
 
 - A charger that starts and finds a transaction still open in its saved state was not shut down in an orderly way, whatever the cause, and reports that transaction with `PowerLoss`. No promise is made that a machine shutdown is orderly: Linux and macOS give a process a moment to finish, in which plugyard ends the transactions properly, and a background site on Windows gets none.
-- The EV stays plugged in across a stop or a power cut, with its state of charge. After the start the connector reports `Finishing` until the EV is unplugged. No transaction starts by itself, even with `startOn: plug`.
+- The EV stays plugged in across a stop or a power cut, with its state of charge. After the start the connector reports `Finishing` until the EV is unplugged or a new transaction starts. No transaction starts by itself, even with `startOn: plug`.
 - A charger with declared state powers on in it, whatever was saved (section 6). An EV it declares is a new arrival, and that one does start a transaction with `startOn: plug`.
 - Messages still owed to the CSMS are saved, and are sent in order after the next boot, before anything new.
 
@@ -438,7 +438,8 @@ A curve must start at 0% and end at 100% state of charge, and its power share mu
 - A different tag presented during a transaction is sent to the CSMS with `Authorize`. It stops the transaction only if it is accepted and has the same `parentIdTag` as the tag that started it; otherwise it is logged and ignored.
 - If the CSMS answers `StartTransaction` with a tag status other than `Accepted`, the charger stops the transaction at once with reason `DeAuthorized`. Setting the `StopTransactionOnInvalidId` configuration key to `false` turns this off.
 - With `startOn: plug`, a transaction starts on plug-in using `startTag`. A tap can still stop it, under the same rules, as can unplugging.
-- A tap on a connector that is `Finishing` is refused: the EV must be unplugged before a new transaction can start.
+- A connector is `Finishing` when its transaction has ended and the EV is still plugged in, however the transaction ended. An accepted tap or a remote start begins a new transaction there, with no need to unplug: the connector reports `Preparing` and then `Charging`, since OCPP 1.6 has no step from `Finishing` to `Charging`. A rejected tag leaves it `Finishing`.
+- A new transaction on an EV that is already at its target starts all the same, and `onEvFull` applies at once: by default it ends with no energy delivered.
 - When the EV reaches its target, `onEvFull` decides between `StopTransaction` followed by `Finishing`, and `SuspendedEV` with the transaction left open.
 - `StopTransaction` reasons: `Local` for a tap, `EVDisconnected` for an unplug, `Remote` for a remote stop, `DeAuthorized` as above, `SoftReset`, `HardReset` and `Reboot` for those, `UnlockCommand` for `UnlockConnector`, `PowerLoss` after a power cut, and `Other` when the EV is full or the connector faults, since OCPP 1.6 has no reason for either.
 - When a charging profile limits a connector to zero during a transaction, the connector reports `SuspendedEVSE` and returns to `Charging` when the limit rises. The transaction stays open.
@@ -457,7 +458,7 @@ Handled automatically with no user action:
 
 | Request | What the charger does |
 |---|---|
-| `RemoteStartTransaction` | Behaves as after an accepted tap: starts a transaction if an EV is plugged in, and otherwise reports `Preparing` and waits `ConnectionTimeOut` seconds for one. With no connector named it picks one with an EV waiting, then the lowest-numbered free one. `Rejected` when no connector is free. With `AuthorizeRemoteTxRequests` set to `true` (default `false`) it sends `Authorize` for the tag first |
+| `RemoteStartTransaction` | Behaves as after an accepted tap: starts a transaction if an EV is plugged in, and otherwise reports `Preparing` and waits `ConnectionTimeOut` seconds for one. With no connector named it picks one with an EV waiting, then one that is `Finishing`, then the lowest-numbered free one. `Rejected` when no connector is free; one that is `Finishing` is free. With `AuthorizeRemoteTxRequests` set to `true` (default `false`) it sends `Authorize` for the tag first |
 | `RemoteStopTransaction` | Stops the transaction with reason `Remote`. `Rejected` for a transaction ID it does not have |
 | `Reset` | Ends transactions with `StopTransaction`, reason `SoftReset` or `HardReset`, then reboots: it is away for about a second and boots again. A soft reset closes the connection properly; a hard reset drops it |
 | `GetConfiguration` | Reports the keys asked for, or all of them, each with its value and whether it is read-only |
