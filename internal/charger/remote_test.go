@@ -100,6 +100,62 @@ func TestRemoteStartWaitsForAnEV(t *testing.T) {
 	csms.WaitForCalls(t, "CP-1", v16.ActionStartTransaction, 1)
 }
 
+func TestRemoteStartOnAFinishingConnector(t *testing.T) {
+	csms := csmstest.Start(t)
+	charging(t, csms, charger.Config{})
+	if got := ask(t, csms, v16.ActionRemoteStopTransaction, v16.RemoteStopTransactionRequest{TransactionID: 1}); got != v16.StatusAccepted {
+		t.Fatalf("RemoteStopTransaction answered %s", got)
+	}
+	waitStatus(t, csms, 1, v16.StatusFinishing)
+
+	// The EV was never unplugged, and the CSMS starts charging again.
+	req := v16.RemoteStartTransactionRequest{ConnectorID: intPtr(1), IDTag: "REMOTE"}
+	if got := ask(t, csms, v16.ActionRemoteStartTransaction, req); got != v16.StatusAccepted {
+		t.Fatalf("RemoteStartTransaction answered %s", got)
+	}
+	var start v16.StartTransactionRequest
+	csms.WaitForCalls(t, "CP-1", v16.ActionStartTransaction, 2)[1].Decode(t, &start)
+	if start.ConnectorID != 1 || start.IDTag != "REMOTE" {
+		t.Errorf("second StartTransaction = %+v, want connector 1 with the tag from the CSMS", start)
+	}
+	waitStatuses(t, csms, 1,
+		v16.StatusAvailable, v16.StatusPreparing, v16.StatusCharging,
+		v16.StatusFinishing, v16.StatusPreparing, v16.StatusCharging)
+}
+
+func TestRemoteStartWithNoConnectorNamedChoosesByWhatIsPluggedIn(t *testing.T) {
+	remoteStart := func(t *testing.T, csms *csmstest.CSMS) v16.StartTransactionRequest {
+		t.Helper()
+		if got := ask(t, csms, v16.ActionRemoteStartTransaction, v16.RemoteStartTransactionRequest{IDTag: "REMOTE"}); got != v16.StatusAccepted {
+			t.Fatalf("RemoteStartTransaction answered %s", got)
+		}
+		var start v16.StartTransactionRequest
+		csms.WaitForCalls(t, "CP-1", v16.ActionStartTransaction, 2)[1].Decode(t, &start)
+		return start
+	}
+
+	t.Run("an EV waiting comes before a Finishing connector", func(t *testing.T) {
+		csms := csmstest.Start(t)
+		r := online(t, csms, charger.Config{})
+		finished(t, csms, r, 1)
+		must(t)(r.Plug(ctx, 2, ev.Defaults()))
+
+		if start := remoteStart(t, csms); start.ConnectorID != 2 || start.IDTag != "REMOTE" {
+			t.Errorf("StartTransaction = %+v, want connector 2, where an EV is waiting", start)
+		}
+	})
+
+	t.Run("a Finishing connector comes before an empty one", func(t *testing.T) {
+		csms := csmstest.Start(t)
+		r := online(t, csms, charger.Config{})
+		finished(t, csms, r, 2)
+
+		if start := remoteStart(t, csms); start.ConnectorID != 2 || start.IDTag != "REMOTE" {
+			t.Errorf("StartTransaction = %+v, want connector 2, where an EV is plugged in", start)
+		}
+	})
+}
+
 func TestRemoteStartAuthorizesWhenConfigured(t *testing.T) {
 	csms := csmstest.Start(t)
 	csms.Handle(v16.ActionAuthorize, func(string, json.RawMessage) (any, *ocppj.CallError) {
