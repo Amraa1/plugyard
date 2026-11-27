@@ -75,9 +75,9 @@ type Charger struct {
 	// EV names the EV preset used when a plug does not name one, or is
 	// empty.
 	EV string
-	// State is the charger's declared state, or nil when the file declares
-	// none.
-	State *charger.Declared
+	// Declared is the charger's declared state, or nil when the file
+	// declares none.
+	Declared *charger.Declared
 }
 
 // Chargers returns every charger of the site, in file order.
@@ -403,7 +403,7 @@ func Parse(data []byte, baseDir string, lookupEnv func(string) (string, bool)) (
 				continue
 			}
 			seen[id] = entryName
-			entry.Chargers = append(entry.Chargers, Charger{ID: id, Name: chargerName, Model: m, CSMS: csms, EV: fe.EV, State: state})
+			entry.Chargers = append(entry.Chargers, Charger{ID: id, Name: chargerName, Model: m, CSMS: csms, EV: fe.EV, Declared: state})
 		}
 		site.Entries = append(site.Entries, entry)
 	}
@@ -517,8 +517,11 @@ func parseEV(fe fileEV) (ev.Overrides, error) {
 // entry's model, or nil when that could not be read, and evParams works out
 // the EV a preset stands for on this entry.
 func parseState(node *yaml.Node, m *model.Model, evParams func(preset string) (ev.Params, bool)) (*charger.Declared, []error) {
-	if node.Kind == 0 {
+	switch {
+	case node.Kind == 0, node.Kind == yaml.ScalarNode && node.Tag == "!!null":
 		return nil, nil
+	case node.Kind != yaml.MappingNode:
+		return nil, []error{errors.New("want a block, such as { connection: offline } or { connectors: { 1: { ev: compact } } }")}
 	}
 	var fs fileState
 	if err := strictDecode(node, &fs); err != nil {
@@ -544,6 +547,10 @@ func parseState(node *yaml.Node, m *model.Model, evParams func(preset string) (e
 			at := "connectors." + key.Value
 
 			var fk fileConnector
+			if empty := value.Kind == yaml.ScalarNode && value.Tag == "!!null"; value.Kind != yaml.MappingNode && !empty {
+				problem("%s: want a block, such as { ev: compact }, { fault: GroundFailure } or {}", at)
+				continue
+			}
 			if err := strictDecode(value, &fk); err != nil {
 				problem("%s: %v", at, err)
 				continue

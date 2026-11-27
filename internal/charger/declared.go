@@ -69,6 +69,39 @@ func (d *Declared) connector(id int) *DeclaredConnector {
 	return nil
 }
 
+// Over returns the saved state of a charger that is powered off as it will
+// stand once the declared state has taken its place: what the charger
+// starts in. A transaction left open on a declared connector is left out,
+// since it ends when the charger starts. Neither argument is changed, and
+// s may be nil for a charger that has never run.
+func (d *Declared) Over(s *State) *State {
+	if d == nil || len(d.Connectors) == 0 {
+		return s
+	}
+	var out State
+	if s != nil {
+		out = *s
+		out.Connectors = slices.Clone(s.Connectors)
+	}
+	for _, dk := range d.Connectors {
+		if dk.ID == 0 {
+			out.Fault = dk.Fault
+			continue
+		}
+		i := slices.IndexFunc(out.Connectors, func(ks ConnectorState) bool { return ks.ID == dk.ID })
+		if i < 0 {
+			out.Connectors = append(out.Connectors, ConnectorState{ID: dk.ID})
+			i = len(out.Connectors) - 1
+		}
+		ks := &out.Connectors[i]
+		ks.Fault, ks.EV, ks.Finishing, ks.Tx = dk.Fault, nil, false, nil
+		if dk.EV != nil {
+			ks.EV = &ev.State{Params: dk.EV.Params, SoC: dk.EV.Params.SoC}
+		}
+	}
+	return &out
+}
+
 // declare puts the charger in its declared state. It runs before the
 // charger is powered on, after its saved state is restored.
 func (c *Charger) declare(d *Declared) {
@@ -142,29 +175,29 @@ func (d *Declared) Check(m *model.Model) []error {
 	}
 
 	seen := map[int]bool{}
-	for _, k := range d.Connectors {
-		at := "connectors." + strconv.Itoa(k.ID)
+	for _, dk := range d.Connectors {
+		at := "connectors." + strconv.Itoa(dk.ID)
 		switch {
-		case seen[k.ID]:
+		case seen[dk.ID]:
 			problem("%s: the connector is listed twice", at)
 			continue
-		case k.ID != 0 && !hasConnector(m, k.ID):
-			problem("%s: the model has no connector %d; it has %s", at, k.ID, connectorNumbers(m))
+		case dk.ID != 0 && !hasConnector(m, dk.ID):
+			problem("%s: the model has no connector %d; it has %s", at, dk.ID, connectorNumbers(m))
 			continue
 		}
-		seen[k.ID] = true
+		seen[dk.ID] = true
 
-		if k.Fault != nil {
-			if err := checkFault(*k.Fault); err != nil {
+		if dk.Fault != nil {
+			if err := checkFault(*dk.Fault); err != nil {
 				problem("%s: fault: %v", at, err)
 			}
 		}
 		switch {
-		case k.EV == nil:
-		case k.ID == 0:
+		case dk.EV == nil:
+		case dk.ID == 0:
 			problem("%s: ev: connector 0 is the charger as a whole, which no EV plugs into; name a connector", at)
 		default:
-			if err := k.EV.Params.Validate(); err != nil {
+			if err := dk.EV.Params.Validate(); err != nil {
 				problem("%s: ev: %v", at, err)
 			}
 		}

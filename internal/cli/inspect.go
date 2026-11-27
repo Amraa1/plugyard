@@ -16,7 +16,6 @@ import (
 	"github.com/Amraa1/plugyard/internal/buildinfo"
 	"github.com/Amraa1/plugyard/internal/charger"
 	"github.com/Amraa1/plugyard/internal/control"
-	"github.com/Amraa1/plugyard/internal/ev"
 	"github.com/Amraa1/plugyard/internal/model"
 	"github.com/Amraa1/plugyard/internal/ocpp/v16"
 )
@@ -177,7 +176,7 @@ func inspectOne(ctx context.Context, siteName, arg string) (inspection, error) {
 		for _, s := range w.saved {
 			for _, c := range s.Chargers {
 				if s.Meta.Name == t.state.Site && c.ID == t.state.ChargePointID {
-					details = control.Inspection{Model: c.Spec.Model, CSMSURL: c.Spec.CSMSURL, State: c.State, Declared: c.Spec.State}
+					details = control.Inspection{Model: c.Spec.Model, CSMSURL: c.Spec.CSMSURL, State: c.State, Declared: c.Spec.Declared}
 				}
 			}
 		}
@@ -191,6 +190,11 @@ func inspectOne(ctx context.Context, siteName, arg string) (inspection, error) {
 // inspect puts together what is known about a charger: what it shows right
 // now, and the state behind that.
 func inspect(now control.ChargerState, details control.Inspection) inspection {
+	// A charger that is powered off is shown as it will start: in its
+	// declared state, where it has one.
+	if !now.Powered {
+		details.State = details.Declared.Over(details.State)
+	}
 	m := details.Model
 	voltage, phases := m.Supply()
 	view := inspection{
@@ -226,22 +230,6 @@ func inspect(now control.ChargerState, details control.Inspection) inspection {
 		}
 		for _, k := range st.Connectors {
 			saved[k.ID] = k
-		}
-	}
-	// A charger that is powered off starts in its declared state, which
-	// takes the place of what is saved.
-	if d := details.Declared; d != nil && !now.Powered {
-		for _, dk := range d.Connectors {
-			if dk.ID == 0 {
-				view.Fault = dk.Fault
-				continue
-			}
-			ks := saved[dk.ID]
-			ks.ID, ks.Fault, ks.EV, ks.Tx = dk.ID, dk.Fault, nil, nil
-			if dk.EV != nil {
-				ks.EV = &ev.State{Params: dk.EV.Params, SoC: dk.EV.Params.SoC}
-			}
-			saved[dk.ID] = ks
 		}
 	}
 	shown := map[int]charger.ConnectorSnapshot{}

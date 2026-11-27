@@ -19,9 +19,10 @@ func newPowerCommands() []*cobra.Command {
 	}{
 		{control.OpStart, "start <charger>", "Power on stopped chargers",
 			"Power on one charger, or every charger matching a pattern such as 'FAST-*'.\n" +
-				"The charger comes back as it was saved: it boots, reports its connectors,\n" +
-				"and sends anything it still owed the CSMS. When its site is not running,\n" +
-				"the site is started in the background with only the named chargers on."},
+				"The charger comes back as it was saved, or in the state its site file\n" +
+				"declares for it: it boots, reports its connectors, and sends anything it\n" +
+				"still owed the CSMS. When its site is not running, the site is started in\n" +
+				"the background with only the named chargers on."},
 		{control.OpStop, "stop <charger>", "Shut chargers down in an orderly way",
 			"Shut down one charger, or every charger matching a pattern: transactions\n" +
 				"end with StopTransaction, then the connection closes. State is kept, and\n" +

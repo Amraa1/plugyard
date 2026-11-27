@@ -69,6 +69,28 @@ func TestDeclaredStateTakesThePlaceOfSavedState(t *testing.T) {
 	}
 }
 
+func TestATransactionCutShortEndsBeforeTheDeclaredEVArrives(t *testing.T) {
+	csms := csmstest.Start(t)
+	// The charger lost power in the middle of transaction 7.
+	saved := &charger.State{Connectors: []charger.ConnectorState{{
+		ID: 1, MeterWh: 2500,
+		EV: &ev.State{Params: ev.Defaults(), SoC: 0.63},
+		Tx: &charger.TxState{Ref: 1, ID: 7, IDTag: "TAG-A"},
+	}}}
+	r := online(t, csms, charger.Config{Restore: saved, Declared: &charger.Declared{Connectors: []charger.DeclaredConnector{
+		{ID: 1, EV: declaredEV()},
+	}}})
+
+	// The CSMS is told of the power loss, with the reading that was saved.
+	if stop := stopRequest(t, csms); stop.TransactionID != 7 || stop.Reason != v16.ReasonPowerLoss || stop.MeterStop != 2500 {
+		t.Errorf("StopTransaction = %+v, want transaction 7 ended by PowerLoss at 2500 Wh", stop)
+	}
+	// The declared EV is a new arrival: the connector is not Finishing.
+	if k := r.Snapshot().Connectors[0]; k.Status != v16.StatusPreparing || k.SoC == nil || *k.SoC != 0.5 {
+		t.Errorf("connector 1 = %+v, want Preparing with the declared EV at 50%%", k)
+	}
+}
+
 func TestAConnectorDeclaredWithNothingIsAvailable(t *testing.T) {
 	csms := csmstest.Start(t)
 	saved := &charger.State{Connectors: []charger.ConnectorState{
@@ -139,6 +161,13 @@ func TestAChargerDeclaredOfflineStaysAwayUntilToldOtherwise(t *testing.T) {
 		t.Errorf("connection = %s, want offline", got)
 	}
 
+	// A reboot is not a power-on, and does not bring the charger back.
+	must(t)(r.Reboot())
+	time.Sleep(100 * time.Millisecond)
+	if n := csms.Connects("CP-1"); n != 0 {
+		t.Fatalf("the charger connected %d times after a reboot, want none", n)
+	}
+
 	// A change made by hand holds until the charger next powers on.
 	must(t)(r.Online())
 	csms.WaitForCalls(t, "CP-1", v16.ActionBootNotification, 1)
@@ -178,6 +207,21 @@ func TestSnapshotOfAStoppedChargerShowsItsDeclaredState(t *testing.T) {
 	}
 	if k := snap.Connectors[1]; k.Status != v16.StatusPreparing || k.SoC == nil || *k.SoC != 0.5 {
 		t.Errorf("connector 1 = %+v, want Preparing with the declared EV", k)
+	}
+
+	// On a model that starts on plug-in the declared EV brings a
+	// transaction, unless a fault stands in the way.
+	onPlug := modelWith(func(m *model.Model) { m.StartOn = model.StartOnPlug })
+	arriving := &charger.Declared{Connectors: []charger.DeclaredConnector{
+		{ID: 1, EV: declaredEV()},
+		{ID: 2, EV: declaredEV(), Fault: &charger.Fault{Code: "GroundFailure"}},
+	}}
+	snap = none.Snapshot("CP-1", onPlug, arriving)
+	if snap.Connectors[0].Status != v16.StatusCharging || snap.Connectors[1].Status != v16.StatusFaulted {
+		t.Errorf("snapshot = %+v, want connector 1 Charging and connector 2 Faulted", snap.Connectors)
+	}
+	if snap = none.Snapshot("CP-1", onPlug, declared); snap.Connectors[1].Status != v16.StatusPreparing {
+		t.Errorf("connector 1 = %+v, want Preparing while the charger as a whole has a fault", snap.Connectors[1])
 	}
 
 	// Declared state wins over what is saved, and leaves the rest alone.

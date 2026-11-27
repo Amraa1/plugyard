@@ -34,7 +34,7 @@ One site must run hundreds to a few thousand chargers comfortably on a developer
 - Charger state saved to disk, surviving stops, terminal exits and machine shutdowns
 - An HTTP API for callers with no shell on the machine, added after V1 (section 14, ADR 0006)
 - Tools for AI agents over the Model Context Protocol (MCP), served by the API, added after V1 (section 14, ADR 0007)
-- Declared state in a site file, for a standing fleet, added after V1 (section 6, ADR 0009)
+- Declared state in a site file, for a site that is left running for others to look at, added after V1 (section 6, ADR 0009)
 
 ### Not in V1
 
@@ -95,7 +95,7 @@ Site commands act on the `site.yaml` in the current directory unless `-f, --file
 |---|---|
 | `plugyard site up [-d] [-y] [--speed N] [--connect-rate N] [--api <address>]` | Read the site file, create the site's chargers, reusing saved state, and start all of them but those declared `stopped` (section 6). Runs in the foreground showing the log of every charger, as `docker compose up` does; `-d` runs it in the background. `--api` also serves the API while the site runs (section 13). |
 | `plugyard site stop` | Power off all chargers. They stay listed in `ps -a`. State is kept. |
-| `plugyard site start` | Power on every charger of a stopped site, in the background, exactly as saved, but for those declared `stopped`. No file is read. |
+| `plugyard site start` | Power on every charger of a stopped site, in the background, as saved, or in its declared state where it has one. Those declared `stopped` stay off. No file is read. |
 | `plugyard site down [--reset]` | Stop and remove the chargers from the listing. Saved state is kept unless `--reset` is given, which wipes it. |
 | `plugyard site ls [-a]` | List running sites; `-a` includes sites that are `stopped` or `down`. |
 | `plugyard site logs [-f] [--events] [--since <when>] [--tail N]` | Show the log of every charger of the site. Here `-f` follows, as in `docker compose logs`; another site file is named with `--file`. |
@@ -307,7 +307,7 @@ An entry gets its charge point IDs from an **ID template** or from a list.
 
 ### Declared state
 
-An entry may declare the state its chargers are in each time they power on. It is for a standing fleet, such as a shared staging server that must show an example of every charger state at all times.
+An entry may declare the state its chargers are in each time they power on. It is for a site that is left running for others to look at, such as one on a shared staging server that must show an example of every charger state at all times.
 
 ```yaml
 chargers:

@@ -94,7 +94,7 @@ func loadWorld(ctx context.Context, siteName string) (*world, error) {
 			w.targets = append(w.targets, target{state: control.ChargerState{
 				Site:     s.Meta.Name,
 				Name:     c.Name,
-				Snapshot: c.State.Snapshot(c.ID, c.Spec.Model, c.Spec.State),
+				Snapshot: c.State.Snapshot(c.ID, c.Spec.Model, c.Spec.Declared),
 			}})
 		}
 	}
@@ -273,7 +273,7 @@ func reconcile(siteName string, want []desired, have []store.Charger, others []s
 				p.change.Reset = append(p.change.Reset, d.ID)
 			}
 		}
-		p.change.Put = append(p.change.Put, store.Charger{ID: d.ID, Name: name, Power: !d.Spec.State.Stopped(), Spec: d.Spec})
+		p.change.Put = append(p.change.Put, store.Charger{ID: d.ID, Name: name, Power: !d.Spec.Declared.Stopped(), Spec: d.Spec})
 	}
 	return p, nil
 }
@@ -384,10 +384,11 @@ func prepare(ctx context.Context, cmd *cobra.Command, dir string, meta store.Met
 	return st, nil
 }
 
-// powerOnAll marks the chargers of a site that are to be powered on when its
-// process starts: every one but those declared stopped. It returns how many
-// that is, and how many chargers the site has.
-func powerOnAll(st *store.Store) (powered, total int, err error) {
+// markToPowerOn marks the chargers of a saved site that "site start" powers
+// on: every one but those declared stopped, as reconcile marks them for
+// "site up". It returns how many that is, and how many chargers the site
+// has.
+func markToPowerOn(st *store.Store) (powered, total int, err error) {
 	chargers, err := st.Chargers()
 	if err != nil {
 		return 0, 0, err
@@ -395,7 +396,7 @@ func powerOnAll(st *store.Store) (powered, total int, err error) {
 	// Not nil, which would stand for every charger.
 	ids := []string{}
 	for _, c := range chargers {
-		if !c.Spec.State.Stopped() {
+		if !c.Spec.Declared.Stopped() {
 			ids = append(ids, c.ID)
 		}
 	}
@@ -424,12 +425,12 @@ func serveSaved(ctx context.Context, dir string, st *store.Store, out io.Writer,
 	powered := map[string]bool{}
 	for _, c := range saved.Chargers {
 		m := site.Member{
-			ID:    c.ID,
-			Name:  c.Name,
-			Model: c.Spec.Model,
-			CSMS:  charger.CSMS{URL: c.Spec.CSMSURL, InsecureSkipVerify: c.Spec.InsecureSkipVerify},
-			EV:    c.Spec.EV,
-			State: c.Spec.State,
+			ID:       c.ID,
+			Name:     c.Name,
+			Model:    c.Spec.Model,
+			CSMS:     charger.CSMS{URL: c.Spec.CSMSURL, InsecureSkipVerify: c.Spec.InsecureSkipVerify},
+			EV:       c.Spec.EV,
+			Declared: c.Spec.Declared,
 		}
 		if c.Spec.HasPassword && password != nil {
 			m.CSMS.Password = password(c.ID)

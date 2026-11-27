@@ -10,9 +10,10 @@ import (
 	"github.com/Amraa1/plugyard/internal/ocpp/v16"
 )
 
-// A standing fleet: every charger of it is declared to be in some state.
-const declaredFleet = `
-name: fleet
+// A site that stands for others to look at: every charger of it is declared
+// to be in some state.
+const declaredSite = `
+name: staging
 evs:
   small: { battery: 40kWh, soc: 50% }
 chargers:
@@ -39,10 +40,10 @@ func psShows(t *testing.T, id, suffix string) {
 }
 
 func TestSiteValidateShowsDeclaredState(t *testing.T) {
-	path := writeSite(t, "ws://localhost:9000/ocpp", declaredFleet)
+	path := writeSite(t, "ws://localhost:9000/ocpp", declaredSite)
 
 	code, stdout, stderr := run("site", "validate", "-f", path)
-	want := "Site fleet is valid: 4 chargers, CSMS ws://localhost:9000/ocpp\n" +
+	want := "Site staging is valid: 4 chargers, CSMS ws://localhost:9000/ocpp\n" +
 		"  lobby  1 charger  LOBBY-1  Acme Wallbox  declared: connector 1 with EV small\n" +
 		"  bay    1 charger  BAY-1    Acme Wallbox  declared: connector 1 with fault GroundFailure\n" +
 		"  gone   1 charger  GONE-1   Acme Wallbox  declared: offline\n" +
@@ -57,12 +58,12 @@ func TestDeclaredStateHoldsAtEveryPowerOn(t *testing.T) {
 	useTempDataDir(t)
 	csms := csmstest.Start(t)
 	t.Setenv(asCLIEnv, "1")
-	path := writeSite(t, csms.URL(), declaredFleet)
+	path := writeSite(t, csms.URL(), declaredSite)
 
 	if code, stdout, stderr := run("site", "up", "-d", "-f", path); code != ExitOK {
 		t.Fatalf("site up -d: exit %d, stdout %q, stderr %q", code, stdout, stderr)
 	}
-	t.Cleanup(func() { run("site", "down", "-s", "fleet") })
+	t.Cleanup(func() { run("site", "down", "-s", "staging") })
 
 	// Each charger comes up in the state the file declares.
 	psShows(t, "LOBBY-1", " online 1:Preparing")
@@ -98,14 +99,14 @@ func TestDeclaredStateHoldsAtEveryPowerOn(t *testing.T) {
 	psShows(t, "BAY-1", " online 1:Faulted(GroundFailure)")
 
 	// A stopped site lists what each charger will report when it starts.
-	if code, stdout, stderr := run("site", "stop", "-s", "fleet"); code != ExitOK {
+	if code, stdout, stderr := run("site", "stop", "-s", "staging"); code != ExitOK {
 		t.Fatalf("site stop: exit %d, stdout %q, stderr %q", code, stdout, stderr)
 	}
 	psShows(t, "LOBBY-1", " stopped 1:Preparing")
 	psShows(t, "BAY-1", " stopped 1:Faulted(GroundFailure)")
 
 	// site start reads no file, and the declared state holds all the same.
-	if code, stdout, stderr := run("site", "start", "-s", "fleet"); code != ExitOK {
+	if code, stdout, stderr := run("site", "start", "-s", "staging"); code != ExitOK {
 		t.Fatalf("site start: exit %d, stdout %q, stderr %q", code, stdout, stderr)
 	}
 	psShows(t, "LOBBY-1", " online 1:Preparing")
@@ -124,7 +125,7 @@ func TestDeclaredStateHoldsAtEveryPowerOn(t *testing.T) {
 func TestInspectShowsDeclaredState(t *testing.T) {
 	useTempDataDir(t)
 	csms := csmstest.Start(t)
-	path := writeSite(t, csms.URL(), declaredFleet)
+	path := writeSite(t, csms.URL(), declaredSite)
 	startSiteUp(t, csms, path, []string{"LOBBY-1", "BAY-1"})
 
 	_, stdout, _ := run("inspect", "LOBBY-1")

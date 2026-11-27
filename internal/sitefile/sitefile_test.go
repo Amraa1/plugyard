@@ -428,7 +428,7 @@ func TestDeclaredState(t *testing.T) {
 	site := mustParse(t, declaredStateFile, nil)
 	declared := map[string]*charger.Declared{}
 	for _, c := range site.Chargers() {
-		declared[c.ID] = c.State
+		declared[c.ID] = c.Declared
 	}
 
 	// The declared EV is worked out in full: the built-in EV, then the
@@ -483,6 +483,8 @@ func TestParseRejectsInvalidDeclaredState(t *testing.T) {
 		{"unknown fault field", state("connectors: { 1: { fault: { code: GroundFailure, colour: red } } }"), "colour"},
 		{"fault without a code", state("connectors: { 1: { fault: { info: hot } } }"), `connectors.1: fault: unknown error code ""`},
 		{"fault that is a list", state("connectors: { 1: { fault: [GroundFailure] } }"), "connectors.1: fault: want an error code"},
+		{"connector that is a word", state("connectors: { 1: compact }"), "chargers.e: state: connectors.1: want a block, such as { ev: compact }"},
+		{"state that is a word", "name: s\ncsms: { url: ws://localhost/ocpp }\nchargers:\n  e: { model: ./fast.Chargerfile, id: A, state: offline }\n", "chargers.e: state: want a block, such as { connection: offline }"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

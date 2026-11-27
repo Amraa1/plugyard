@@ -63,8 +63,8 @@ func checkSiteFile(sf *sitefile.Site) ([]string, error) {
 	var members []site.Member
 	for _, entry := range sf.Entries {
 		for _, spec := range entry.Chargers {
-			m := site.Member{ID: spec.ID, Model: spec.Model, CSMS: spec.CSMS, State: spec.State}
-			if _, err := charger.New(charger.Config{ID: m.ID, Model: m.Model, CSMS: m.CSMS, Declared: m.State}); err != nil {
+			m := site.Member{ID: spec.ID, Model: spec.Model, CSMS: spec.CSMS, Declared: spec.Declared}
+			if _, err := charger.New(charger.Config{ID: m.ID, Model: m.Model, CSMS: m.CSMS, Declared: m.Declared}); err != nil {
 				return nil, &UsageError{Err: fmt.Errorf("chargers.%s: %w", entry.Name, err)}
 			}
 			members = append(members, m)
@@ -91,7 +91,7 @@ func desiredFromFile(sf *sitefile.Site) []desired {
 				InsecureSkipVerify: c.CSMS.InsecureSkipVerify,
 				HasPassword:        c.CSMS.Password != "",
 				EV:                 c.EV,
-				State:              c.State,
+				Declared:           c.Declared,
 			},
 		})
 	}
@@ -176,12 +176,17 @@ func newSiteUp() *cobra.Command {
 			}
 
 			out := cmd.OutOrStdout()
-			if powered, total, err := powerOnAll(st); err != nil || powered == 0 {
-				st.Close()
-				if err == nil {
-					fmt.Fprint(out, nonePoweredOn(sf.Name, total))
+			// Chargers declared stopped are created and left off.
+			powered := 0
+			for _, c := range sf.Chargers() {
+				if !c.Declared.Stopped() {
+					powered++
 				}
-				return err
+			}
+			if powered == 0 {
+				st.Close()
+				fmt.Fprint(out, nonePoweredOn(sf.Name, count))
+				return nil
 			}
 			if detach {
 				st.Close()
@@ -217,7 +222,7 @@ func newSiteUp() *cobra.Command {
 				}()
 			}
 
-			fmt.Fprintf(out, "Starting site %s with %s\n", sf.Name, countChargers(count))
+			fmt.Fprintf(out, "Starting site %s with %s\n", sf.Name, countChargers(powered))
 			passwords := filePasswords(sf)
 			return serveSaved(cmd.Context(), dir, st, out, true, func(id string) string { return passwords[id] })
 		},
@@ -339,10 +344,10 @@ func newSiteStart() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "start",
 		Short: "Power on the chargers of a stopped site",
-		Long: "Start every charger of a stopped site again, in the background, exactly\n" +
-			"as it was saved. No file is read: to apply changes made to the site file,\n" +
-			"use \"plugyard site up\" instead. A charger whose declared state is\n" +
-			"stopped stays off.",
+		Long: "Start every charger of a stopped site again, in the background, as it was\n" +
+			"saved, or in its declared state where it has one. No file is read: to\n" +
+			"apply changes made to the site file, use \"plugyard site up\" instead. A\n" +
+			"charger declared stopped stays off.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			name, err := siteNameFromFlags(file, siteName)
@@ -367,7 +372,7 @@ func newSiteStart() *cobra.Command {
 			}
 			powered, total := 0, 0
 			if err == nil {
-				powered, total, err = powerOnAll(st)
+				powered, total, err = markToPowerOn(st)
 			}
 			st.Close()
 			if err != nil {
@@ -610,7 +615,7 @@ func newSiteValidate() *cobra.Command {
 					row = append(row, plain("name "+first.Name))
 				}
 				// Every charger of an entry has the same declared state.
-				if d := declaredView(first.State); d != nil {
+				if d := declaredView(first.Declared); d != nil {
 					row = append(row, plain("declared: "+describeDeclared(d)))
 				}
 				rows = append(rows, row)

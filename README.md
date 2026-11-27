@@ -223,9 +223,9 @@ plugyard rm FAST-1            # wipes the charger's saved state
 
 If you edit a site file so that saved state would be lost, for example by removing a charger, `site up` lists what is affected and asks first. `--yes` answers in advance, for scripts.
 
-### Keep a fleet in a known state
+### Keep a site in a known state
 
-For a server that other people look at, such as a staging fleet that must always show a charger of every kind, a site file can declare the state each charger is in whenever it powers on:
+For a server that other people look at, such as a staging site that must always show a charger of every kind, a site file can declare the state each charger is in whenever it powers on:
 
 ```yaml
 chargers:
@@ -379,7 +379,7 @@ Give a charger a name of your own with `name:` in the site file (on an entry tha
 - **Speed time up.** `plugyard site up --speed 60` makes one real second count as a minute of charging.
 - **Go easy on the CSMS.** `--connect-rate 50` opens at most fifty new connections a second; by default every charger connects at once.
 
-- **Say what state each charger is in.** A `state:` block on a charger entry declares it offline, stopped, faulted or with an EV plugged in, each time it powers on. See "Keep a fleet in a known state" above.
+- **Say what state each charger is in.** A `state:` block on a charger entry declares it offline, stopped, faulted or with an EV plugged in, each time it powers on. See "Keep a site in a known state" above.
 
 All of it is specified in [docs/SPEC.md](docs/SPEC.md), sections 5 to 7.
 
