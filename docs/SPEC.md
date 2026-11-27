@@ -652,7 +652,7 @@ What a step can do, with the options that go with it:
 
 - A scenario runs against a site that is already up: the one named with `-s`, or the only one running. With several running and no `-s`, the command stops and says so. Patterns match only chargers of that site.
 - Every time in a scenario is scenario time: a step's `at`, and the `for` of an `offline` step. A scenario runs at the speed of its site. Against a site at `--speed 60`, a step at `30m` runs after 30 seconds, when the EVs have charged for 30 minutes, and `for: 2m` keeps the charger away for two real seconds. `--speed N` on `scenario run` gives the run a speed of its own (see ADR 0008).
-- An `offline` step prints both times when the speed is not 1: `offline --for 2m0s (2s at speed 60)`. The real time is given to the millisecond.
+- An `offline` step prints both times when the speed is not 1: `offline --for 2m0s (2s at speed 60)`. A real time of a millisecond or more is rounded to the millisecond. At speed 1 the time is sent as written.
 - In an outage that short, a charger queues only what the scenario makes it send: `MeterValues` and `Heartbeat` run on real-time timers. For an outage that lasts a real time, such as one the CSMS must notice after five minutes, run at speed 1, or use `exec <charger> offline --for` beside the run.
 - Each step prints what `exec` prints: one line per charger, and a count when there are several. `--format json` prints one object per charger and step, with `step`, `at` and `do` added to the fields `exec` gives.
 - A step that fails on a charger, or matches no charger, does not stop the run. Every failure is reported. `--fail-fast` stops at the first step that failed.

@@ -110,13 +110,24 @@ steps:
 		}
 	}
 
+	// returned waits until LOBBY-1 has come back n times. The log says so the
+	// moment it happens, where "ps" may still show the state before the drop.
+	returned := func(n int) {
+		t.Helper()
+		eventually(t, fmt.Sprintf("LOBBY-1 has come back %d times", n), func() bool {
+			return strings.Count(mustRun(t, "logs", "LOBBY-1", "--events"), "network connection restored") >= n
+		})
+	}
+	// So far: once by itself, and once by the online step.
+	returned(2)
+
 	// One step run by itself starts now, and its time away is still
 	// shortened: by the speed of the run, here another than the site's.
 	out := mustRun(t, "scenario", "run", path, "--step", "1", "--speed", "120")
 	if want := "[0s] step 1: offline --for 1m0s (500ms at speed 120) on LOBBY-1\nLOBBY-1  ok  offline for 500ms\n"; !strings.Contains(out, want) {
 		t.Errorf("scenario run --step 1 --speed 120 is missing %q:\n%s", want, out)
 	}
-	eventually(t, "LOBBY-1 is back by itself", func() bool { return strings.Contains(psRow(t, "LOBBY-1"), " online ") })
+	returned(3)
 
 	// A real time that does not come out even is given to the millisecond.
 	uneven := writeScenario(t, "name: uneven\nsteps:\n  - { at: 0s, charger: LOBBY-1, do: offline, for: 1s }\n")
@@ -124,7 +135,7 @@ steps:
 	if want := "offline --for 1s (143ms at speed 7) on LOBBY-1\nLOBBY-1  ok  offline for 143ms\n"; !strings.Contains(out, want) {
 		t.Errorf("scenario run --speed 7 is missing %q:\n%s", want, out)
 	}
-	eventually(t, "LOBBY-1 is back by itself", func() bool { return strings.Contains(psRow(t, "LOBBY-1"), " online ") })
+	returned(4)
 
 	// A time away too short to be left at this speed is still a time away:
 	// the charger must not stay offline until it is brought back.
@@ -133,10 +144,22 @@ steps:
 	if want := "offline --for 100ns (1ns at speed 600) on LOBBY-1\nLOBBY-1  ok  offline for 1ns\n"; !strings.Contains(out, want) {
 		t.Errorf("scenario run of a very short time away is missing %q:\n%s", want, out)
 	}
-	eventually(t, "LOBBY-1 is back by itself", func() bool { return strings.Contains(psRow(t, "LOBBY-1"), " online ") })
+	returned(5)
+
+	// At speed 1 the time away is sent as it is written.
+	asWritten := writeScenario(t, "name: as-written\nsteps:\n  - { at: 0s, charger: LOBBY-1, do: offline, for: 100.5ms }\n")
+	out = mustRun(t, "scenario", "run", asWritten, "--speed", "1")
+	if want := "offline --for 100.5ms on LOBBY-1\nLOBBY-1  ok  offline for 100.5ms\n"; !strings.Contains(out, want) {
+		t.Errorf("scenario run --speed 1 is missing %q:\n%s", want, out)
+	}
+	returned(6)
 }
 
 func TestTheExampleScenarioRunsAgainstTheExampleSite(t *testing.T) {
+	// It takes fifteen seconds.
+	if testing.Short() {
+		t.Skip("skipped with -short")
+	}
 	useTempDataDir(t)
 	csms := csmstest.Start(t)
 	t.Setenv("CSMS_URL", csms.URL())
