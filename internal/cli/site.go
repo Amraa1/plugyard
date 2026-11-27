@@ -30,7 +30,7 @@ func newSite() *cobra.Command {
 			"site.yaml in the current directory, and started and stopped together.",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) > 0 {
-				return &UsageError{Err: fmt.Errorf("unknown command %q for \"plugyard site\"", args[0])}
+				return unknownCommand(cmd, args[0])
 			}
 			return cmd.Help()
 		},

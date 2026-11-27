@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -413,5 +415,27 @@ func TestStoppingEndsAWaitingTool(t *testing.T) {
 		}
 	case <-time.After(8 * time.Second):
 		t.Fatal("the tool went on waiting after the API stopped")
+	}
+}
+
+// An agent with a shell reads the guide before it meets the tools, so the
+// guide names every one of them.
+func TestTheGuideNamesEveryTool(t *testing.T) {
+	guide, err := os.ReadFile(filepath.Join("..", "..", "llms.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, err := agent(t, serve(t, Config{DataDir: dataDir(t), Backend: &fakeBackend{}, Version: "1.2.3"}), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	names, _ := toolNames(t, session)
+	if len(names) == 0 {
+		t.Fatal("there are no tools to look for")
+	}
+	for _, name := range names {
+		if !strings.Contains(string(guide), "`"+name+"`") {
+			t.Errorf("the guide does not name the tool %q", name)
+		}
 	}
 }

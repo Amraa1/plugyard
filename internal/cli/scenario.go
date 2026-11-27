@@ -38,7 +38,7 @@ func newScenario() *cobra.Command {
 			"vendorCode and for.",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) > 0 {
-				return &UsageError{Err: fmt.Errorf("unknown command %q for \"plugyard scenario\"", args[0])}
+				return unknownCommand(cmd, args[0])
 			}
 			return cmd.Help()
 		},

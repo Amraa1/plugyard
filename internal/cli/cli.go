@@ -8,6 +8,8 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"strconv"
+	"strings"
 	"syscall"
 
 	"github.com/spf13/cobra"
@@ -55,7 +57,7 @@ func RunContext(ctx context.Context, args []string, stdout, stderr io.Writer) in
 	root.SetErr(stderr)
 	markStarted(root, &started)
 
-	err := root.ExecuteContext(ctx)
+	failed, err := root.ExecuteContextC(ctx)
 	if err == nil {
 		return ExitOK
 	}
@@ -68,10 +70,29 @@ func RunContext(ctx context.Context, args []string, stdout, stderr io.Writer) in
 
 	var usage *UsageError
 	if !started || errors.As(err, &usage) {
-		fmt.Fprintln(stderr, "Run 'plugyard --help' for usage.")
+		// The help of the command that was refused, which is where its
+		// flags and arguments are.
+		fmt.Fprintf(stderr, "Run '%s --help' for usage.\n", failed.CommandPath())
 		return ExitUsage
 	}
 	return ExitFailure
+}
+
+// unknownCommand is the error for a word that is not a command of cmd. It
+// names the commands the word comes close to, since a misspelling is the
+// usual cause.
+func unknownCommand(cmd *cobra.Command, word string) error {
+	msg := fmt.Sprintf("unknown command %q for %q", word, cmd.CommandPath())
+	if cmd.SuggestionsMinimumDistance <= 0 {
+		cmd.SuggestionsMinimumDistance = 2
+	}
+	if near := cmd.SuggestionsFor(word); len(near) > 0 {
+		for i, name := range near {
+			near[i] = strconv.Quote(name)
+		}
+		msg += "; did you mean " + strings.Join(near, " or ") + "?"
+	}
+	return &UsageError{Err: errors.New(msg)}
 }
 
 // markStarted wraps the run function of cmd and of every command below it so
@@ -94,7 +115,12 @@ func newRoot() *cobra.Command {
 		Short: "Simulate EV chargers for testing a CSMS",
 		Long: "plugyard simulates EV chargers speaking OCPP, so you can develop and\n" +
 			"test a CSMS without hardware.",
-		Args:          cobra.NoArgs,
+		Args: func(cmd *cobra.Command, args []string) error {
+			if len(args) > 0 {
+				return unknownCommand(cmd, args[0])
+			}
+			return nil
+		},
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {

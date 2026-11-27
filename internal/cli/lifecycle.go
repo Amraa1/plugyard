@@ -28,7 +28,13 @@ func newPowerCommands() []*cobra.Command {
 				"end with StopTransaction, then the connection closes. State is kept, and\n" +
 				"\"plugyard start\" brings the charger back. Stopping the last running\n" +
 				"charger of a site ends the site's process."},
-		{control.OpRestart, "restart <charger>", "Stop chargers and start them again", ""},
+		{control.OpRestart, "restart <charger>", "Stop chargers and start them again",
+			"Shut down one charger, or every charger matching a pattern, as \"plugyard\n" +
+				"stop\" does, and power it on again, as \"plugyard start\" does: transactions\n" +
+				"end with StopTransaction, and the charger boots and reports its connectors.\n" +
+				"A charger whose site file declares a state comes back in that state, which\n" +
+				"undoes what was changed by hand since. The CSMS sees a new BootNotification;\n" +
+				"for a reboot the charger does by itself, use \"plugyard exec <charger> reboot\"."},
 		{control.OpKill, "kill <charger>", "Cut the power of chargers",
 			"Cut the power of one charger, or of every charger matching a pattern: the\n" +
 				"connection drops with no message, as in a real power cut. State is kept.\n" +
