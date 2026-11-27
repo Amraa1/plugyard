@@ -376,9 +376,6 @@ func (c *Charger) Tap(ctx context.Context, connectorID int, tag string) (string,
 		reason := c.blocked(k)
 		c.mu.Unlock()
 		return "", errors.New(reason)
-	case running == nil && k.finishing:
-		c.mu.Unlock()
-		return "", errors.New("the last transaction has ended; unplug the EV first")
 	case running == nil && k.pending != nil:
 		c.mu.Unlock()
 		return "", errors.New("a tag has already been accepted and the connector is waiting for an EV")
@@ -392,7 +389,7 @@ func (c *Charger) Tap(ctx context.Context, connectorID int, tag string) (string,
 
 	c.mu.Lock()
 	// The connector may have changed while the CSMS was answering.
-	if k.tx != running || (running == nil && (k.finishing || k.pending != nil)) {
+	if k.tx != running || (running == nil && k.pending != nil) {
 		c.mu.Unlock()
 		return "", errors.New("the connector changed state while the tag was being authorized")
 	}
@@ -429,9 +426,18 @@ func (c *Charger) Tap(ctx context.Context, connectorID int, tag string) (string,
 // admit acts on a tag that may charge on a connector: it starts a
 // transaction if an EV is plugged in, and otherwise has the connector wait
 // for one. profile is the TxProfile a remote start gave for the transaction,
-// or nil. The caller holds c.mu and reports the connector's status.
+// or nil. The caller holds c.mu and reports the connector's status
+// afterwards; admit itself reports only the Preparing that a Finishing
+// connector passes through.
 func (c *Charger) admit(k *connector, tag, parent string, profile *v16.ChargingProfile) (string, *transaction) {
 	if k.ev != nil {
+		if k.finishing {
+			// The EV stayed plugged in after its last transaction. OCPP 1.6
+			// has no step from Finishing to Charging, so the connector
+			// reports Preparing on the way.
+			k.finishing = false
+			c.reportStatus(k)
+		}
 		tx := c.startTx(k, tag, parent)
 		c.installTx(k, profile)
 		return "", tx
