@@ -72,6 +72,10 @@ type Config struct {
 	Log func(Entry)
 	// Restore, if set, is the state saved when the charger last had power.
 	Restore *State
+	// Declared, if set, is the state the charger's site file says it is in
+	// each time it powers on. Where it speaks, it takes the place of
+	// Restore.
+	Declared *Declared
 	// Diagnostics, if set, returns the charger's log between two moments, as
 	// the file GetDiagnostics asks for. A zero time leaves that end open.
 	Diagnostics func(from, to time.Time) ([]byte, error)
@@ -167,8 +171,9 @@ type Charger struct {
 	config map[string]string // OCPP configuration keys
 	// overrides holds the configuration keys the CSMS changed.
 	overrides map[string]string
-	// recovered describes what restoring the saved state brought to light,
-	// to be logged when the charger is powered on.
+	// recovered describes what restoring the saved state brought to light
+	// and what the declared state put in its place, to be logged when the
+	// charger is powered on.
 	recovered []string
 
 	// wake tells the connection that the outbox has something to send.
@@ -269,6 +274,9 @@ func New(cfg Config) (*Charger, error) {
 	if cfg.Speed < 0 {
 		return nil, errors.New("the speed cannot be negative")
 	}
+	if problems := cfg.Declared.Check(cfg.Model); len(problems) > 0 {
+		return nil, fmt.Errorf("its declared state does not fit: %w", errors.Join(problems...))
+	}
 	if cfg.Speed == 0 {
 		cfg.Speed = 1
 	}
@@ -328,6 +336,9 @@ func New(cfg Config) (*Charger, error) {
 	if cfg.Restore != nil {
 		c.restore(cfg.Restore)
 	}
+	if cfg.Declared != nil {
+		c.declare(cfg.Declared)
+	}
 	return c, nil
 }
 
@@ -365,6 +376,7 @@ func (c *Charger) Run(ctx context.Context) error {
 	for _, line := range c.recovered {
 		c.event("%s", line)
 	}
+	c.arrive()
 	wait := c.cfg.Timing.ReconnectMin
 
 	// The EVs keep charging whether or not the CSMS is reachable.

@@ -3,6 +3,7 @@ package schemas
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -41,7 +42,7 @@ func check(t *testing.T, schema *jsonschema.Schema, text []byte) error {
 		t.Fatalf("not YAML: %v", err)
 	}
 	// Through JSON, so that the validator sees JSON's types.
-	asJSON, err := json.Marshal(value)
+	asJSON, err := json.Marshal(textKeys(value))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -50,6 +51,28 @@ func check(t *testing.T, schema *jsonschema.Schema, text []byte) error {
 		t.Fatal(err)
 	}
 	return schema.Validate(doc)
+}
+
+// textKeys turns the keys of every map into text, as JSON has them. YAML
+// reads a key such as the connector number 1 as a number.
+func textKeys(value any) any {
+	switch v := value.(type) {
+	case map[string]any:
+		for key, item := range v {
+			v[key] = textKeys(item)
+		}
+	case map[any]any:
+		out := make(map[string]any, len(v))
+		for key, item := range v {
+			out[fmt.Sprint(key)] = textKeys(item)
+		}
+		return out
+	case []any:
+		for i, item := range v {
+			v[i] = textKeys(item)
+		}
+	}
+	return value
 }
 
 // The files plugyard ships must pass their own schemas, so that the schemas
@@ -110,6 +133,16 @@ chargers:
   fast: { model: ./Chargerfile, count: 20, id: "FAST-{n:03}", start: 5, ev: compact, config: { MeterValueSampleInterval: 10 } }
   odd: { model: ./Chargerfile, ids: [12994897, p025b2036387], csms: { url: "ws://other/ocpp" } }
   lobby: { model: ./wallbox.Chargerfile, id: LOBBY-1, name: front-desk }
+  bay:
+    model: ./Chargerfile
+    id: BAY-1
+    state:
+      connection: offline
+      connectors:
+        0: { fault: InternalError }
+        1: { ev: compact, fault: { code: GroundFailure, info: RCD tripped, vendorCode: E42 } }
+        2: {}
+  spare: { model: ./Chargerfile, id: SPARE-1, state: { connection: stopped } }
 `,
 		"scenario": `
 name: everything
@@ -145,6 +178,10 @@ func TestSchemasCatchMistakes(t *testing.T) {
 		"a site with no name":                     {"site", "chargers: { a: { model: ./Chargerfile } }\n"},
 		"a misspelled site setting":               {"site", "name: x\nchargers: { a: { model: ./Chargerfile, cuont: 3 } }\n"},
 		"a charger entry with no model":           {"site", "name: x\nchargers: { a: { count: 3 } }\n"},
+		"a declared connection that is not one":   {"site", "name: x\nchargers: { a: { model: ./Chargerfile, state: { connection: online } } }\n"},
+		"a misspelled declared state setting":     {"site", "name: x\nchargers: { a: { model: ./Chargerfile, state: { power: stopped } } }\n"},
+		"a declared fault with an unknown code":   {"site", "name: x\nchargers: { a: { model: ./Chargerfile, state: { connectors: { 1: { fault: Exploded } } } } }\n"},
+		"a declared connector that is no number":  {"site", "name: x\nchargers: { a: { model: ./Chargerfile, state: { connectors: { one: {} } } } }\n"},
 		"a step with no time":                     {"scenario", "name: x\nsteps: [{ charger: CP-1, do: plug }]\n"},
 		"an unknown action":                       {"scenario", "name: x\nsteps: [{ at: 0s, charger: CP-1, do: explode }]\n"},
 		"a tap with no tag":                       {"scenario", "name: x\nsteps: [{ at: 0s, charger: CP-1, do: tap }]\n"},

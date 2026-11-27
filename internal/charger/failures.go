@@ -3,8 +3,6 @@ package charger
 import (
 	"errors"
 	"fmt"
-	"slices"
-	"strings"
 	"time"
 
 	"github.com/Amraa1/plugyard/internal/ocpp/v16"
@@ -50,11 +48,8 @@ func describe(k *connector) string {
 // Fault makes a connector, or with connector 0 the charger as a whole,
 // report a fault. A transaction running there ends.
 func (c *Charger) Fault(connectorID int, fault Fault) (string, error) {
-	if !slices.Contains(v16.ErrorCodes, fault.Code) {
-		return "", fmt.Errorf("unknown error code %q: OCPP 1.6 has %s", fault.Code, strings.Join(v16.ErrorCodes, ", "))
-	}
-	if len(fault.Info) > 50 || len(fault.VendorCode) > 50 {
-		return "", errors.New("the info and the vendor code may each be 50 characters at most")
+	if err := checkFault(fault); err != nil {
+		return "", err
 	}
 
 	c.mu.Lock()

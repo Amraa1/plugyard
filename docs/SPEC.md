@@ -34,6 +34,7 @@ One site must run hundreds to a few thousand chargers comfortably on a developer
 - Charger state saved to disk, surviving stops, terminal exits and machine shutdowns
 - An HTTP API for callers with no shell on the machine, added after V1 (section 14, ADR 0006)
 - Tools for AI agents over the Model Context Protocol (MCP), served by the API, added after V1 (section 14, ADR 0007)
+- Declared state in a site file, for a site that is left running for others to look at, added after V1 (section 6, ADR 0009)
 
 ### Not in V1
 
@@ -68,6 +69,7 @@ One site must run hundreds to a few thousand chargers comfortably on a developer
 | **EV preset** | A named set of EV parameters in a site file |
 | **Charge curve** | The share of its maximum power an EV accepts at each state of charge |
 | **Scenario** | A file of timed actions run against a running site |
+| **Declared state** | The state a site file says a charger is in each time it powers on |
 
 Every charger belongs to a site. A charger started with `plugyard run` belongs to an implicit site named after its charge point ID.
 
@@ -91,9 +93,9 @@ Site commands act on the `site.yaml` in the current directory unless `-f, --file
 
 | Command | Effect |
 |---|---|
-| `plugyard site up [-d] [-y] [--speed N] [--connect-rate N] [--api <address>]` | Read the site file, create the site's chargers, reusing saved state, and start all of them. Runs in the foreground showing the log of every charger, as `docker compose up` does; `-d` runs it in the background. `--api` also serves the API while the site runs (section 13). |
+| `plugyard site up [-d] [-y] [--speed N] [--connect-rate N] [--api <address>]` | Read the site file, create the site's chargers, reusing saved state, and start all of them but those declared `stopped` (section 6). Runs in the foreground showing the log of every charger, as `docker compose up` does; `-d` runs it in the background. `--api` also serves the API while the site runs (section 13). |
 | `plugyard site stop` | Power off all chargers. They stay listed in `ps -a`. State is kept. |
-| `plugyard site start` | Power on every charger of a stopped site, in the background, exactly as saved. No file is read. |
+| `plugyard site start` | Power on every charger of a stopped site, in the background, as saved, or in its declared state where it has one. Those declared `stopped` stay off. No file is read. |
 | `plugyard site down [--reset]` | Stop and remove the chargers from the listing. Saved state is kept unless `--reset` is given, which wipes it. |
 | `plugyard site ls [-a]` | List running sites; `-a` includes sites that are `stopped` or `down`. |
 | `plugyard site logs [-f] [--events] [--since <when>] [--tail N]` | Show the log of every charger of the site. Here `-f` follows, as in `docker compose logs`; another site file is named with `--file`. |
@@ -112,7 +114,7 @@ Site commands act on the `site.yaml` in the current directory unless `-f, --file
 
 | Command | Effect |
 |---|---|
-| `plugyard ps [-a]` | List running chargers with name, site, connection state (`connecting`, `online` or `offline`) and the status of each connector; `-a` includes stopped ones, shown as `stopped` with the status each connector will report on start. |
+| `plugyard ps [-a]` | List running chargers with name, site, connection state (`connecting`, `online` or `offline`) and the status of each connector; `-a` includes stopped ones, shown as `stopped` with the status each connector will report on start, by its saved and its declared state. |
 | `plugyard wait <charger>... <state> [-n, --connector <number>] [--timeout <time>]` | Wait until every named charger is in a state (see below). |
 | `plugyard logs <charger> [-f] [--events] [--since <when>] [--tail N]` | Show events and OCPP messages (section 11). |
 | `plugyard stats [--no-stream]` | Live table of power, energy on the meters, transactions and message counts per running charger, with a total first. |
@@ -303,6 +305,58 @@ An entry gets its charge point IDs from an **ID template** or from a list.
 - An entry with `count` above 1 must have `{n}` in its template.
 - The same charge point ID twice in one site file is an error.
 
+### Declared state
+
+An entry may declare the state its chargers are in each time they power on. It is for a site that is left running for others to look at, such as one on a shared staging server that must show an example of every charger state at all times.
+
+```yaml
+chargers:
+  lobby:
+    model: ./wallbox.Chargerfile
+    id: "LOBBY-1"
+    state:
+      connectors:
+        1: { ev: longrange }           # an EV is plugged in: Preparing
+  bay:
+    model: ./Chargerfile
+    id: "BAY-1"
+    state:
+      connectors:
+        0: { fault: InternalError }    # the charger as a whole
+        2: { fault: { code: GroundFailure, info: RCD tripped, vendorCode: E42 } }
+  free:
+    model: ./Chargerfile
+    id: "FREE-1"
+    state:
+      connectors:
+        1: {}                          # nothing plugged in and no fault: Available
+  gone:
+    model: ./Chargerfile
+    id: "GONE-1"
+    state: { connection: offline }     # stays away across restarts
+  spare:
+    model: ./Chargerfile
+    id: "SPARE-1"
+    state: { connection: stopped }     # declared and never started
+```
+
+| Setting | Meaning |
+|---|---|
+| `connection: offline` | The charger powers on with its network connection taken down, as after `exec <charger> offline`, and stays away until `exec <charger> online` |
+| `connection: stopped` | `site up` and `site start` create the charger and leave it powered off. `plugyard start <charger>` powers it on until it is stopped |
+| `connectors` | Connectors by number. `0` is the charger as a whole, as with `exec --connector 0` |
+| `ev: <preset>` | An EV of that EV preset is plugged in. Not for connector `0` |
+| `fault: <errorCode>` | The connector reports the fault. The long form gives `code`, `info` and `vendorCode`, as the `fault` step of a scenario does |
+
+- **Declared state is applied every time the charger powers on**, by any command: `site up`, `site start`, `start`, `restart`, and a start after `kill`. Where it speaks, it takes the place of the saved state (ADR 0009). A reboot and a `Reset` from the CSMS are not a power-on and apply nothing.
+- **A change made by hand lasts until the charger next powers on.** `plugyard restart <charger>` puts one charger back in its declared state.
+- **A connector that is listed is declared whole**: with no `ev` nothing is plugged in, and with no `fault` it has none. A connector that is not listed follows the saved state.
+- **What the CSMS set is not declared and still persists.** A connector it made `Unavailable` stays so, and meter readings are untouched.
+- **A declared EV is a new arrival each time**: a fresh EV at the preset's starting state of charge, in place of any EV in the saved state. Its parameters are worked out as for a plug that names the preset. On a model with `startOn: plug` a transaction starts with `startTag` at power-on, and the CSMS hears of it once the charger has booted.
+- **A site whose chargers are all declared `stopped`** comes up with none powered on. `site up` and `site start` say so, with exit code `0`.
+- On an entry with `count` above 1 the block applies to every charger of the entry.
+- `inspect` shows a charger's declared state, and `site validate` shows it beside each entry. `ps -a` shows a stopped charger with the statuses its declared state gives it.
+
 ### Environment variables
 
 | Form | Meaning |
@@ -367,6 +421,7 @@ A curve must start at 0% and end at 100% state of charge, and its power share mu
 
 - A charger that starts and finds a transaction still open in its saved state was not shut down in an orderly way, whatever the cause, and reports that transaction with `PowerLoss`. No promise is made that a machine shutdown is orderly: Linux and macOS give a process a moment to finish, in which plugyard ends the transactions properly, and a background site on Windows gets none.
 - The EV stays plugged in across a stop or a power cut, with its state of charge. After the start the connector reports `Finishing` until the EV is unplugged or a new transaction starts. No transaction starts by itself, even with `startOn: plug`.
+- A charger with declared state powers on in it, whatever was saved (section 6). An EV it declares is a new arrival, and that one does start a transaction with `startOn: plug`.
 - Messages still owed to the CSMS are saved, and are sent in order after the next boot, before anything new.
 
 ### Connection
@@ -544,7 +599,7 @@ Failures are caused on purpose, with actions, so that a CSMS can be tested again
 - When the CSMS goes away by itself, the charger retries by itself, as described under Connection.
 - A tap while offline is refused, since the tag cannot be authorized, unless one of two standard keys allows it. `AllowOfflineTxForUnknownId: true` accepts any tag. `AuthorizationCacheEnabled: true` has the charger remember what the CSMS said about each tag and accept the ones it accepted; the cache is saved, and `ClearCache` empties it. Both are `false` by default.
 - Stopping a transaction while offline always works.
-- `offline` is not remembered across `stop` and `start`.
+- `offline` is not remembered across `stop` and `start`. A charger that is to stay away says so in its declared state: `state: { connection: offline }` (section 6).
 
 **Answers that are errors.** A `StartTransaction`, `StopTransaction` or `MeterValues` that the CSMS answers with an error is sent again after `TransactionMessageRetryInterval` seconds (default 60) times the number of attempts so far, up to `TransactionMessageAttempts` attempts (default 3), and is then dropped. Messages behind it wait, so their order is kept. An answer to `StartTransaction` that cannot be read counts as an error. Other messages are not sent again.
 
@@ -573,7 +628,7 @@ Scale:
 Saved per charger:
 
 - Its name
-- A snapshot of the model and site-file settings it was created from
+- A snapshot of the model and site-file settings it was created from, with its declared state
 - Configuration keys and their current values
 - Installed charging profiles
 - Meter reading per connector
@@ -593,6 +648,7 @@ When files and saved state disagree, `site up` and `run` settle it:
 | Vendor, model name or firmware version | Applied. The next `BootNotification` carries the new values, as after a firmware update. A firmware version installed by `UpdateFirmware` takes precedence over the file |
 | Connector type or maximum power, behavior settings, CSMS URL, default EV | Applied |
 | A configuration key | The file wins, unless the CSMS changed that key; then saved state wins |
+| Declared state | Applied, with no confirmation. The file wins over saved state at this and every later power-on, until the next `site up` reads the file again |
 | The number of connectors | The charger's saved state is reset, after confirmation. It keeps its name |
 | A charger removed from the site file | The charger and its saved state are deleted, after confirmation |
 

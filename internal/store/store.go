@@ -68,6 +68,9 @@ type Spec struct {
 	HasPassword bool `json:"hasPassword,omitempty"`
 	// EV names the EV preset used when a plug does not name one.
 	EV string `json:"ev,omitempty"`
+	// Declared is the declared state of the charger, or nil when its site
+	// file declares none.
+	Declared *charger.Declared `json:"declared,omitempty"`
 }
 
 // Charger is a saved charger.

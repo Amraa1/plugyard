@@ -29,7 +29,10 @@ type inspection struct {
 	Connection string `json:"connection"`
 	CSMSURL    string `json:"csmsUrl"`
 
-	Model      inspectedModel       `json:"model"`
+	Model inspectedModel `json:"model"`
+	// Declared is the state the site file says the charger is in each time
+	// it powers on, when it declares any.
+	Declared   *inspectedDeclared   `json:"declared,omitempty"`
 	Connectors []inspectedConnector `json:"connectors"`
 	// Fault is a fault of the charger as a whole.
 	Fault            *charger.Fault             `json:"fault,omitempty"`
@@ -43,6 +46,21 @@ type inspection struct {
 	AuthorizationCache map[string]v16.IDTagInfo `json:"authorizationCache,omitempty"`
 	MessagesSent       int64                    `json:"messagesSent"`
 	MessagesReceived   int64                    `json:"messagesReceived"`
+}
+
+// inspectedDeclared is a charger's declared state.
+type inspectedDeclared struct {
+	// Connection is "offline" or "stopped" when the file declares one.
+	Connection string                       `json:"connection,omitempty"`
+	Connectors []inspectedDeclaredConnector `json:"connectors,omitempty"`
+}
+
+type inspectedDeclaredConnector struct {
+	// ID is 0 for the charger as a whole.
+	ID int `json:"id"`
+	// EV names the EV preset of the EV plugged in.
+	EV    string         `json:"ev,omitempty"`
+	Fault *charger.Fault `json:"fault,omitempty"`
 }
 
 type inspectedModel struct {
@@ -158,7 +176,7 @@ func inspectOne(ctx context.Context, siteName, arg string) (inspection, error) {
 		for _, s := range w.saved {
 			for _, c := range s.Chargers {
 				if s.Meta.Name == t.state.Site && c.ID == t.state.ChargePointID {
-					details = control.Inspection{Model: c.Spec.Model, CSMSURL: c.Spec.CSMSURL, State: c.State}
+					details = control.Inspection{Model: c.Spec.Model, CSMSURL: c.Spec.CSMSURL, State: c.State, Declared: c.Spec.Declared}
 				}
 			}
 		}
@@ -172,6 +190,11 @@ func inspectOne(ctx context.Context, siteName, arg string) (inspection, error) {
 // inspect puts together what is known about a charger: what it shows right
 // now, and the state behind that.
 func inspect(now control.ChargerState, details control.Inspection) inspection {
+	// A charger that is powered off is shown as it will start: in its
+	// declared state, where it has one.
+	if !now.Powered {
+		details.State = details.Declared.Over(details.State)
+	}
 	m := details.Model
 	voltage, phases := m.Supply()
 	view := inspection{
@@ -190,6 +213,8 @@ func inspect(now control.ChargerState, details control.Inspection) inspection {
 		MessagesSent:     now.MessagesSent,
 		MessagesReceived: now.MessagesReceived,
 	}
+
+	view.Declared = declaredView(details.Declared)
 
 	saved := map[int]charger.ConnectorState{}
 	if st := details.State; st != nil {
@@ -259,6 +284,9 @@ func writeInspection(w io.Writer, v inspection) {
 		{plain("  Supply"), plain(fmt.Sprintf("%s V, %s", strconv.FormatFloat(v.Model.Voltage, 'f', -1, 64), countPhases(v.Model.Phases)))},
 		{plain("  Behavior"), plain(fmt.Sprintf("starts on %s; when the EV is full: %s", v.Model.StartOn, v.Model.OnEvFull))},
 		{plain("  Messages"), plain(fmt.Sprintf("%d sent, %d received since power-on", v.MessagesSent, v.MessagesReceived))},
+	}
+	if v.Declared != nil {
+		head = append(head, []cell{plain("  Declared"), plain(describeDeclared(v.Declared))})
 	}
 	if v.Fault != nil {
 		head = append(head, []cell{plain("  Fault"), {plain: describeFault(v.Fault), rendered: p.red(describeFault(v.Fault))}})
@@ -348,6 +376,52 @@ func writeInspection(w io.Writer, v inspection) {
 		rows = append(rows, row)
 	}
 	writeTable(w, rows)
+}
+
+// describeDeclared puts a declared state in words, such as "offline,
+// connector 1 with EV compact".
+func describeDeclared(d *inspectedDeclared) string {
+	var parts []string
+	if d.Connection != "" {
+		parts = append(parts, d.Connection)
+	}
+	for _, k := range d.Connectors {
+		what := "connector " + strconv.Itoa(k.ID)
+		if k.ID == 0 {
+			what = "the charger"
+		}
+		switch {
+		case k.EV != "" && k.Fault != nil:
+			what += " with EV " + k.EV + " and fault " + k.Fault.Code
+		case k.EV != "":
+			what += " with EV " + k.EV
+		case k.Fault != nil:
+			what += " with fault " + k.Fault.Code
+		case k.ID == 0:
+			what += " with no fault"
+		default:
+			what += " with nothing plugged in"
+		}
+		parts = append(parts, what)
+	}
+	return strings.Join(parts, ", ")
+}
+
+// declaredView is the declared state of a charger as inspect shows it, or
+// nil when nothing is declared.
+func declaredView(d *charger.Declared) *inspectedDeclared {
+	if d.Empty() {
+		return nil
+	}
+	view := &inspectedDeclared{Connection: d.Connection}
+	for _, dk := range d.Connectors {
+		k := inspectedDeclaredConnector{ID: dk.ID, Fault: dk.Fault}
+		if dk.EV != nil {
+			k.EV = dk.EV.Preset
+		}
+		view.Connectors = append(view.Connectors, k)
+	}
+	return view
 }
 
 func describeFault(f *charger.Fault) string {

@@ -7,6 +7,14 @@
   "additionalProperties": false,
   "required": ["name", "chargers"],
   "definitions": {
+    "errorCode": {
+      "enum": [
+        "ConnectorLockFailure", "EVCommunicationError", "GroundFailure", "HighTemperature",
+        "InternalError", "LocalListConflict", "OtherError", "OverCurrentFailure",
+        "OverVoltage", "PowerMeterFailure", "PowerSwitchFailure", "ReaderFailure",
+        "ResetFailure", "UnderVoltage", "WeakSignal"
+      ]
+    },
     "csms": {
       "type": "object",
       "additionalProperties": false,
@@ -96,7 +104,46 @@
             "type": "object",
             "additionalProperties": { "type": ["string", "number", "boolean"] }
           },
-          "csms": { "description": "Parts of the CSMS settings that differ for these chargers.", "$ref": "#/definitions/csms" }
+          "csms": { "description": "Parts of the CSMS settings that differ for these chargers.", "$ref": "#/definitions/csms" },
+          "state": {
+            "description": "The declared state of these chargers: the state they are in each time they power on, whatever was saved. A change made by hand lasts until the charger next powers on.",
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "connection": {
+                "description": "offline: the charger powers on with its network connection taken down, until \"plugyard exec <charger> online\". stopped: \"site up\" and \"site start\" leave it powered off, until \"plugyard start <charger>\".",
+                "enum": ["offline", "stopped"]
+              },
+              "connectors": {
+                "description": "Connectors by number; 0 is the charger as a whole. A connector that is listed is declared whole: with no ev nothing is plugged in, and with no fault it has none. One that is not listed follows the saved state.",
+                "type": "object",
+                "propertyNames": { "pattern": "^[0-9]+$" },
+                "additionalProperties": {
+                  "type": ["object", "null"],
+                  "additionalProperties": false,
+                  "properties": {
+                    "ev": { "description": "The EV preset of the EV plugged in: a fresh one each time the charger powers on. Not for connector 0.", "type": "string" },
+                    "fault": {
+                      "description": "The fault reported: an OCPP 1.6 error code, or the code with what goes with it.",
+                      "oneOf": [
+                        { "$ref": "#/definitions/errorCode" },
+                        {
+                          "type": "object",
+                          "additionalProperties": false,
+                          "required": ["code"],
+                          "properties": {
+                            "code": { "description": "The OCPP 1.6 error code.", "$ref": "#/definitions/errorCode" },
+                            "info": { "description": "Free text about the fault. At most 50 characters.", "type": "string", "maxLength": 50 },
+                            "vendorCode": { "description": "The vendor's own code for the fault. At most 50 characters.", "type": "string", "maxLength": 50 }
+                          }
+                        }
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          }
         }
       }
     }

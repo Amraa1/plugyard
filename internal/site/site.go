@@ -26,6 +26,9 @@ type Member struct {
 	CSMS  charger.CSMS
 	// EV names the EV preset used when a plug does not name one.
 	EV string
+	// Declared is the charger's declared state, or nil when its site
+	// file declares none.
+	Declared *charger.Declared
 }
 
 // Store is where a site keeps the state of its chargers.
@@ -134,6 +137,7 @@ func (s *Site) chargerConfig(m Member, saved *charger.State) charger.Config {
 		BeforeDial: s.pacer,
 		Log:        s.cfg.Log,
 		Restore:    saved,
+		Declared:   m.Declared,
 
 		AllowUploads:              s.cfg.AllowUploads,
 		UploadsInsecureSkipVerify: s.cfg.UploadsInsecureSkipVerify,
@@ -221,7 +225,7 @@ func (s *Site) States() []MemberState {
 			if s.cfg.Store != nil {
 				saved, _ = s.cfg.Store.LoadState(e.m.ID)
 			}
-			state.Snapshot = saved.Snapshot(e.m.ID, e.m.Model)
+			state.Snapshot = saved.Snapshot(e.m.ID, e.m.Model, e.m.Declared)
 		}
 		out = append(out, state)
 	}

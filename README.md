@@ -223,6 +223,36 @@ plugyard rm FAST-1            # wipes the charger's saved state
 
 If you edit a site file so that saved state would be lost, for example by removing a charger, `site up` lists what is affected and asks first. `--yes` answers in advance, for scripts.
 
+### Keep a site in a known state
+
+For a server that other people look at, such as a staging site that must always show a charger of every kind, a site file can declare the state each charger is in whenever it powers on:
+
+```yaml
+chargers:
+  lobby:
+    model: ./wallbox.Chargerfile
+    id: LOBBY-1
+    state: { connectors: { 1: { ev: longrange } } }          # an EV is plugged in: Preparing
+  bay:
+    model: ./Chargerfile
+    id: BAY-1
+    state: { connectors: { 1: { fault: GroundFailure } } }   # Faulted
+  free:
+    model: ./Chargerfile
+    id: FREE-1
+    state: { connectors: { 1: {} } }                         # nothing plugged in: Available
+  gone:
+    model: ./Chargerfile
+    id: GONE-1
+    state: { connection: offline }                           # stays away from the CSMS
+  spare:
+    model: ./Chargerfile
+    id: SPARE-1
+    state: { connection: stopped }                           # declared, and never started
+```
+
+Declared state wins over what was saved, every time the charger powers on, so a restart of the server cannot drift from the file. What you change by hand, with `exec` or a scenario, lasts until then, and `plugyard restart BAY-1` puts one charger back. A charger declared `stopped` starts with `plugyard start SPARE-1`. `plugyard site validate` and `plugyard inspect` show what is declared.
+
 ### Test what goes wrong
 
 Real chargers fail, and a CSMS has to cope. plugyard lets you cause the failures you would otherwise wait months to see in the field, one command each.
@@ -348,6 +378,8 @@ Give a charger a name of your own with `name:` in the site file (on an entry tha
 - **Charge like a fast-charging car.** `curve: dc-fast` in an EV preset, or `plug --curve dc-fast`, makes power ramp up, hold, and taper off as the battery fills.
 - **Speed time up.** `plugyard site up --speed 60` makes one real second count as a minute of charging.
 - **Go easy on the CSMS.** `--connect-rate 50` opens at most fifty new connections a second; by default every charger connects at once.
+
+- **Say what state each charger is in.** A `state:` block on a charger entry declares it offline, stopped, faulted or with an EV plugged in, each time it powers on. See "Keep a site in a known state" above.
 
 All of it is specified in [docs/SPEC.md](docs/SPEC.md), sections 5 to 7.
 

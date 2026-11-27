@@ -31,3 +31,12 @@ chargers:
     id: "LOBBY-1"
     name: front-desk      # optional: the others get a made-up name such as brisk_volt
     config: { MeterValueSampleInterval: 10 }
+    # Declared state: what the charger is in each time it powers on, whatever
+    # was saved. Here an EV is plugged into connector 1. Other forms:
+    #   state: { connection: offline }       stays away from the CSMS
+    #   state: { connection: stopped }       created, and left powered off
+    #   state: { connectors: { 1: { fault: GroundFailure } } }
+    #   state: { connectors: { 1: {} } }     nothing plugged in and no fault
+    # state:
+    #   connectors:
+    #     1: { ev: compact }
