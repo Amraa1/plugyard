@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"go.yaml.in/yaml/v3"
 
@@ -163,6 +164,7 @@ type fileState struct {
 
 type fileConnector struct {
 	EV    string    `yaml:"ev"`
+	Renew string    `yaml:"renew"`
 	Fault yaml.Node `yaml:"fault"`
 }
 
@@ -562,6 +564,18 @@ func parseState(node *yaml.Node, m *model.Model, evParams func(preset string) (e
 					k.EV = &charger.DeclaredEV{Preset: fk.EV, Params: params}
 				} else {
 					problem("%s: ev: there is no EV preset named %q", at, fk.EV)
+				}
+			}
+			if fk.Renew != "" {
+				switch after, err := time.ParseDuration(strings.TrimSpace(fk.Renew)); {
+				case fk.EV == "":
+					problem("%s: renew: there is no EV to renew; give ev as well", at)
+				case err != nil:
+					problem("%s: renew: %q is not a time; write it as 30s, 5m or 1h30m", at, fk.Renew)
+				case after <= 0:
+					problem("%s: renew: the time must be above 0", at)
+				case k.EV != nil:
+					k.EV.Renew = after
 				}
 			}
 			fault, err := parseFault(&fk.Fault)

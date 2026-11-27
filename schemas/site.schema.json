@@ -123,6 +123,7 @@
                   "additionalProperties": false,
                   "properties": {
                     "ev": { "description": "The EV preset of the EV plugged in: a fresh one each time the charger powers on. Not for connector 0.", "type": "string" },
+                    "renew": { "description": "Renews the declared EV when it is done: this long after it is full with no transaction it leaves, and this long after that a fresh one arrives. Real time, such as 30s, 5m or 1h30m. Only beside ev.", "type": "string" },
                     "fault": {
                       "description": "The fault reported: an OCPP 1.6 error code, or the code with what goes with it.",
                       "oneOf": [

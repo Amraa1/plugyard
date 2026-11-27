@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/Amraa1/plugyard/internal/ev"
 	"github.com/Amraa1/plugyard/internal/model"
@@ -43,6 +44,56 @@ type DeclaredEV struct {
 	// Params is that EV in full, as the presets stood when the site file
 	// was read.
 	Params ev.Params `json:"params"`
+	// Renew, when above zero, has the EV renewed once it is done: it leaves
+	// that long after it is full with no transaction, and a fresh one
+	// arrives that long after it left. It is real time, whatever the speed.
+	Renew time.Duration `json:"renew,omitempty"`
+}
+
+// renewal keeps the declared EV of a connector renewed.
+type renewal struct {
+	ev DeclaredEV
+	// leaveAt is when the EV, which is done, leaves. It is zero while the
+	// EV is not done.
+	leaveAt time.Time
+	// arriveAt is when a fresh EV arrives on the empty connector.
+	arriveAt time.Time
+}
+
+// renew lets the declared EV of a connector leave when it is done, and a
+// fresh one arrive in its place. An EV is done when it is at its target and
+// its connector has no transaction, so one left suspended with its
+// transaction open is not. The caller holds c.mu.
+func (c *Charger) renew(k *connector, now time.Time) {
+	r := k.renewal
+	if r == nil {
+		return
+	}
+	switch {
+	case k.ev == nil:
+		if now.Before(r.arriveAt) {
+			return
+		}
+		p := r.ev.Params
+		k.ev = ev.New(p)
+		r.arriveAt = time.Time{}
+		c.dirty = true
+		c.event("connector %d: a fresh EV plugged in (%s kWh, %.0f%%)", k.id, strconv.FormatFloat(p.BatteryWh/1000, 'f', -1, 64), p.SoC*100)
+		if c.cfg.Model.StartOn == model.StartOnPlug && c.blocked(k) == "" {
+			c.startTx(k, c.cfg.Model.StartTag, "")
+		}
+		c.reportStatus(k)
+	case k.tx != nil || !k.ev.Full():
+		r.leaveAt = time.Time{}
+	case r.leaveAt.IsZero():
+		r.leaveAt = now.Add(r.ev.Renew)
+	case !now.Before(r.leaveAt):
+		k.ev, k.finishing = nil, false
+		r.leaveAt, r.arriveAt = time.Time{}, now.Add(r.ev.Renew)
+		c.dirty = true
+		c.event("connector %d: the EV is full and left; a fresh one arrives in %s", k.id, r.ev.Renew)
+		c.reportStatus(k)
+	}
 }
 
 // Empty reports whether nothing is declared.
@@ -122,10 +173,13 @@ func (c *Charger) declare(d *Declared) {
 			c.recovered = append(c.recovered, fmt.Sprintf("%s: fault %s, as its site file declares", describe(k), fault.Code))
 		}
 		if k.id != 0 {
-			k.ev, k.finishing = nil, false
+			k.ev, k.finishing, k.renewal = nil, false, nil
 			if dk.EV != nil {
 				p := dk.EV.Params
 				k.ev = ev.New(p)
+				if dk.EV.Renew > 0 {
+					k.renewal = &renewal{ev: *dk.EV}
+				}
 				c.recovered = append(c.recovered, fmt.Sprintf("connector %d: EV plugged in (%s kWh, %.0f%%), as its site file declares",
 					k.id, strconv.FormatFloat(p.BatteryWh/1000, 'f', -1, 64), p.SoC*100))
 			}
@@ -199,6 +253,9 @@ func (d *Declared) Check(m *model.Model) []error {
 		default:
 			if err := dk.EV.Params.Validate(); err != nil {
 				problem("%s: ev: %v", at, err)
+			}
+			if dk.EV.Renew < 0 {
+				problem("%s: renew: the time must be above 0", at)
 			}
 		}
 	}

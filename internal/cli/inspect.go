@@ -59,7 +59,10 @@ type inspectedDeclaredConnector struct {
 	// ID is 0 for the charger as a whole.
 	ID int `json:"id"`
 	// EV names the EV preset of the EV plugged in.
-	EV    string         `json:"ev,omitempty"`
+	EV string `json:"ev,omitempty"`
+	// Renew is the time after which that EV is renewed once it is full,
+	// such as "5m0s", when it is renewed.
+	Renew string         `json:"renew,omitempty"`
 	Fault *charger.Fault `json:"fault,omitempty"`
 }
 
@@ -390,11 +393,15 @@ func describeDeclared(d *inspectedDeclared) string {
 		if k.ID == 0 {
 			what = "the charger"
 		}
+		ev := k.EV
+		if k.Renew != "" {
+			ev += " (renewed after " + k.Renew + ")"
+		}
 		switch {
 		case k.EV != "" && k.Fault != nil:
-			what += " with EV " + k.EV + " and fault " + k.Fault.Code
+			what += " with EV " + ev + " and fault " + k.Fault.Code
 		case k.EV != "":
-			what += " with EV " + k.EV
+			what += " with EV " + ev
 		case k.Fault != nil:
 			what += " with fault " + k.Fault.Code
 		case k.ID == 0:
@@ -418,6 +425,9 @@ func declaredView(d *charger.Declared) *inspectedDeclared {
 		k := inspectedDeclaredConnector{ID: dk.ID, Fault: dk.Fault}
 		if dk.EV != nil {
 			k.EV = dk.EV.Preset
+			if dk.EV.Renew > 0 {
+				k.Renew = dk.EV.Renew.String()
+			}
 		}
 		view.Connectors = append(view.Connectors, k)
 	}

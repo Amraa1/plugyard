@@ -37,6 +37,8 @@ chargers:
     #   state: { connection: stopped }       created, and left powered off
     #   state: { connectors: { 1: { fault: GroundFailure } } }
     #   state: { connectors: { 1: {} } }     nothing plugged in and no fault
+    # With "renew: 5m" beside "ev", a full EV leaves after five minutes and a
+    # fresh one arrives five minutes later.
     # state:
     #   connectors:
     #     1: { ev: compact }
