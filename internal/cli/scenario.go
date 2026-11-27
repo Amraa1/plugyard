@@ -107,9 +107,11 @@ func newScenarioRun() *cobra.Command {
 		Short: "Run a scenario against a running site",
 		Long: "Carry out the steps of a scenario against a site that is up: the one named\n" +
 			"with -s, or the only one running.\n\n" +
-			"Step times follow the site's speed. Against a site started with --speed 60,\n" +
-			"a step at 30m runs after 30 seconds, when the EVs have charged for 30\n" +
-			"simulated minutes. --speed overrides that.\n\n" +
+			"Every time in a scenario follows the site's speed: a step's \"at\", and the\n" +
+			"\"for\" of an offline step. Against a site started with --speed 60, a step at\n" +
+			"30m runs after 30 seconds, when the EVs have charged for 30 minutes, and\n" +
+			"\"for: 2m\" keeps the charger away for 2 real seconds. --speed gives the run\n" +
+			"a speed of its own.\n\n" +
 			"A step that fails on a charger does not stop the run: every failure is\n" +
 			"reported, and the exit code is 1 if there was any. --fail-fast stops at the\n" +
 			"first step that failed. A tag the CSMS rejects is an outcome, not a failure.\n\n" +
@@ -201,7 +203,14 @@ func newScenarioRun() *cobra.Command {
 					break
 				}
 
-				results := runStep(ctx, site.Site, step)
+				// The time an offline step stays away is scenario time, as the
+				// step's own time is (ADR 0008). The charger is told the real time.
+				sent, described := step, step.Describe()
+				if step.Do == control.ActionOffline && step.Request.For > 0 && speed != 1 {
+					sent.Request.For = realTime(step.Request.For, speed)
+					described += fmt.Sprintf(" (%s at speed %s)", sent.Request.For, strconv.FormatFloat(speed, 'f', -1, 64))
+				}
+				results := runStep(ctx, site.Site, sent)
 				done++
 				stepFailed := 0
 				for _, r := range results {
@@ -213,7 +222,7 @@ func newScenarioRun() *cobra.Command {
 				failed += stepFailed
 
 				if text {
-					fmt.Fprintf(out, "\n%s step %d: %s on %s\n", p.bold("["+step.At.String()+"]"), step.Number, step.Describe(), step.Charger)
+					fmt.Fprintf(out, "\n%s step %d: %s on %s\n", p.bold("["+step.At.String()+"]"), step.Number, described, step.Charger)
 					writeExecResults(out, results, stepFailed)
 				} else {
 					lines := make([]stepResult, 0, len(results))
@@ -284,6 +293,17 @@ func runStep(ctx context.Context, siteName string, step scenario.Step) []control
 		return fail(err)
 	}
 	return results
+}
+
+// realTime returns the real time that a length of scenario time takes at a
+// speed, rounded to the millisecond when it is that long. It is never zero,
+// which an offline action would read as staying away until brought back.
+func realTime(d time.Duration, speed float64) time.Duration {
+	d = time.Duration(float64(d) / speed)
+	if d >= time.Millisecond {
+		return d.Round(time.Millisecond)
+	}
+	return max(d, 1)
 }
 
 func countSucceeded(actions int) string {

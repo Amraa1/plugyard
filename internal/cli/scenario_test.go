@@ -2,6 +2,7 @@ package cli
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -77,6 +78,117 @@ func TestScenarioRunsAgainstASite(t *testing.T) {
 	}
 	if n := len(csms.Calls("LOBBY-1")); n > 4 {
 		t.Errorf("LOBBY-1 made %d calls; the scenario does not name it", n)
+	}
+}
+
+func TestScenarioOutageFollowsTheSpeed(t *testing.T) {
+	useTempDataDir(t)
+	csms := csmstest.Start(t)
+	startSiteUp(t, csms, writeSite(t, csms.URL(), fiveChargers), fiveIDs, "--speed", "600")
+
+	// At 600x the minute away is a tenth of a second, so the charger is back
+	// long before the step at ten minutes, which runs one second in.
+	path := writeScenario(t, `
+name: outage
+steps:
+  - { at: 0s,  charger: LOBBY-1, do: offline, for: 1m }
+  - { at: 10m, charger: LOBBY-1, do: offline }
+  - { at: 10m, charger: LOBBY-1, do: online }
+`)
+	code, stdout, stderr := run("scenario", "run", path)
+	if code != ExitOK {
+		t.Fatalf("scenario run: exit %d, stderr %q, stdout:\n%s", code, stderr, stdout)
+	}
+	for _, want := range []string{
+		// The step says both times: the one written and the real one.
+		"[0s] step 1: offline --for 1m0s (100ms at speed 600) on LOBBY-1\nLOBBY-1  ok  offline for 100ms\n",
+		"[10m0s] step 2: offline on LOBBY-1\nLOBBY-1  ok  offline\n",
+		"Scenario outage finished: 3 steps, all 3 actions succeeded\n",
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Errorf("the output is missing %q:\n%s", want, stdout)
+		}
+	}
+
+	// returned waits until LOBBY-1 has come back n times. The log says so the
+	// moment it happens, where "ps" may still show the state before the drop.
+	returned := func(n int) {
+		t.Helper()
+		eventually(t, fmt.Sprintf("LOBBY-1 has come back %d times", n), func() bool {
+			return strings.Count(mustRun(t, "logs", "LOBBY-1", "--events"), "network connection restored") >= n
+		})
+	}
+	// So far: once by itself, and once by the online step.
+	returned(2)
+
+	// One step run by itself starts now, and its time away is still
+	// shortened: by the speed of the run, here another than the site's.
+	out := mustRun(t, "scenario", "run", path, "--step", "1", "--speed", "120")
+	if want := "[0s] step 1: offline --for 1m0s (500ms at speed 120) on LOBBY-1\nLOBBY-1  ok  offline for 500ms\n"; !strings.Contains(out, want) {
+		t.Errorf("scenario run --step 1 --speed 120 is missing %q:\n%s", want, out)
+	}
+	returned(3)
+
+	// A real time that does not come out even is given to the millisecond.
+	uneven := writeScenario(t, "name: uneven\nsteps:\n  - { at: 0s, charger: LOBBY-1, do: offline, for: 1s }\n")
+	out = mustRun(t, "scenario", "run", uneven, "--speed", "7")
+	if want := "offline --for 1s (143ms at speed 7) on LOBBY-1\nLOBBY-1  ok  offline for 143ms\n"; !strings.Contains(out, want) {
+		t.Errorf("scenario run --speed 7 is missing %q:\n%s", want, out)
+	}
+	returned(4)
+
+	// A time away too short to be left at this speed is still a time away:
+	// the charger must not stay offline until it is brought back.
+	blip := writeScenario(t, "name: blip\nsteps:\n  - { at: 0s, charger: LOBBY-1, do: offline, for: 100ns }\n")
+	out = mustRun(t, "scenario", "run", blip)
+	if want := "offline --for 100ns (1ns at speed 600) on LOBBY-1\nLOBBY-1  ok  offline for 1ns\n"; !strings.Contains(out, want) {
+		t.Errorf("scenario run of a very short time away is missing %q:\n%s", want, out)
+	}
+	returned(5)
+
+	// At speed 1 the time away is sent as it is written.
+	asWritten := writeScenario(t, "name: as-written\nsteps:\n  - { at: 0s, charger: LOBBY-1, do: offline, for: 100.5ms }\n")
+	out = mustRun(t, "scenario", "run", asWritten, "--speed", "1")
+	if want := "offline --for 100.5ms on LOBBY-1\nLOBBY-1  ok  offline for 100.5ms\n"; !strings.Contains(out, want) {
+		t.Errorf("scenario run --speed 1 is missing %q:\n%s", want, out)
+	}
+	returned(6)
+}
+
+func TestTheExampleScenarioRunsAgainstTheExampleSite(t *testing.T) {
+	// It takes fifteen seconds.
+	if testing.Short() {
+		t.Skip("skipped with -short")
+	}
+	useTempDataDir(t)
+	csms := csmstest.Start(t)
+	t.Setenv("CSMS_URL", csms.URL())
+	ids := []string{"LOBBY-1"}
+	for n := 1; n <= 20; n++ {
+		ids = append(ids, fmt.Sprintf("FAST-%03d", n))
+	}
+	examples := filepath.Join("..", "..", "examples")
+	// At 120x the thirty minutes take fifteen seconds, and the two minutes
+	// that FAST-004 is away take one.
+	startSiteUp(t, csms, filepath.Join(examples, "site.yaml"), ids, "--speed", "120")
+
+	out := mustRun(t, "scenario", "run", filepath.Join(examples, "scenario.yaml"))
+	if !strings.Contains(out, "Scenario morning finished: 11 steps, all 69 actions succeeded\n") {
+		t.Errorf("the example scenario did not run clean:\n%s", out)
+	}
+
+	// As the file says, the driver of FAST-004 stops charging while the
+	// charger is away, and the CSMS hears of it once the charger is back.
+	events := mustRun(t, "logs", "FAST-004", "--events")
+	down := strings.Index(events, "network connection taken down for 1s")
+	stopped := strings.Index(events, "stopped (Local)")
+	back := strings.Index(events, "network connection restored")
+	if down < 0 || stopped < down || back < stopped {
+		t.Errorf("FAST-004 did not stop its transaction while away:\n%s", events)
+	}
+	stop := decodeCall[v16.StopTransactionRequest](t, csms.WaitForCalls(t, "FAST-004", v16.ActionStopTransaction, 1)[0])
+	if stop.Reason != v16.ReasonLocal {
+		t.Errorf("FAST-004: StopTransaction reason = %s, want Local", stop.Reason)
 	}
 }
 

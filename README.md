@@ -190,7 +190,7 @@ plugyard scenario run commute.yaml --step 3  # try one step now, while you are w
 ```
 
 - **A step does what `exec` does**, with the same options, or powers chargers with `stop`, `start`, `restart` and `kill`.
-- **Times follow the site's speed.** Against `plugyard site up --speed 60`, these thirty minutes take thirty seconds, and the EVs have charged for thirty minutes.
+- **Every time follows the site's speed.** Against `plugyard site up --speed 60`, these thirty minutes take thirty seconds, and the EVs have charged for thirty minutes. The `for` of an `offline` step is shortened the same way, where `exec ... offline --for` is real time.
 - **It fits CI.** The exit code is `0` when everything succeeded, `1` when an action failed, and `2` when the file has a mistake. `--fail-fast` stops at the first failure, and `--format json` prints one object per action.
 
 A longer one, with a network drop and a power cut, is in [examples/scenario.yaml](examples/scenario.yaml).

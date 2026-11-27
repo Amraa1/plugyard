@@ -52,7 +52,7 @@
           },
           "info": { "description": "fault: free text about the fault. At most 50 characters.", "type": "string", "maxLength": 50 },
           "vendorCode": { "description": "fault: the vendor's own code for the fault. At most 50 characters.", "type": "string", "maxLength": 50 },
-          "for": { "description": "offline: come back online after this long, such as 30s. Without it the charger stays offline until an online step.", "type": "string" },
+          "for": { "description": "offline: come back online after this long, such as 30s. Like at, it follows the speed: at speed 60, 2m is two real seconds. Without it the charger stays offline until an online step.", "type": "string" },
           "step": {
             "description": "fail: what fails next. download and install belong to a firmware update, upload to a diagnostics upload.",
             "enum": ["download", "install", "upload"]

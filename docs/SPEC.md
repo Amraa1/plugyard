@@ -539,7 +539,7 @@ Failures are caused on purpose, with actions, so that a CSMS can be tested again
 
 **Network loss.** The charger cannot tell why the CSMS is out of reach, so it behaves the same whatever the cause: charging continues, transaction messages queue in order, and after reconnecting it boots and sends them before anything new.
 
-- `exec <charger> offline` takes the connection down until `online`. `--for 30s` brings it back after that time.
+- `exec <charger> offline` takes the connection down until `online`. `--for 30s` brings it back after that time, which is real time, whatever the `--speed` of the site.
 - When the CSMS goes away by itself, the charger retries by itself, as described under Connection.
 - A tap while offline is refused, since the tag cannot be authorized, unless one of two standard keys allows it. `AllowOfflineTxForUnknownId: true` accepts any tag. `AuthorizationCacheEnabled: true` has the charger remember what the CSMS said about each tag and accept the ones it accepted; the cache is saved, and `ClearCache` empties it. Both are `false` by default.
 - Stopping a transaction while offline always works.
@@ -639,7 +639,7 @@ What a step can do, with the options that go with it:
 | `tap` | `tag` (required), `connector` | `exec <charger> tap <tag>` |
 | `fault` | `code` (required), `info`, `vendorCode`, `connector` (0 is the whole charger) | `exec <charger> fault <code>` |
 | `clear` | `connector` | `exec <charger> clear` |
-| `offline` | `for` | `exec <charger> offline` |
+| `offline` | `for`, in scenario time | `exec <charger> offline`, where `--for` is real time |
 | `online`, `reboot` | | `exec <charger> online`, `reboot` |
 | `fail` | `step` (required): `download`, `install` or `upload` | `exec <charger> fail <step>` |
 | `stop`, `start`, `restart`, `kill` | | `plugyard stop <charger>` and so on |
@@ -651,7 +651,9 @@ What a step can do, with the options that go with it:
 ### Running a scenario
 
 - A scenario runs against a site that is already up: the one named with `-s`, or the only one running. With several running and no `-s`, the command stops and says so. Patterns match only chargers of that site.
-- Step times follow the site's speed. Against a site at `--speed 60`, a step at `30m` runs after 30 seconds, when the EVs have charged for 30 simulated minutes. `--speed N` on `scenario run` overrides the site's speed.
+- Every time in a scenario is scenario time: a step's `at`, and the `for` of an `offline` step. A scenario runs at the speed of its site. Against a site at `--speed 60`, a step at `30m` runs after 30 seconds, when the EVs have charged for 30 minutes, and `for: 2m` keeps the charger away for two real seconds. `--speed N` on `scenario run` gives the run a speed of its own (see ADR 0008).
+- An `offline` step prints both times when the speed is not 1: `offline --for 2m0s (2s at speed 60)`. A real time of a millisecond or more is rounded to the millisecond. At speed 1 the time is sent as written.
+- In an outage that short, a charger queues only what the scenario makes it send: `MeterValues` and `Heartbeat` run on real-time timers. For an outage that lasts a real time, such as one the CSMS must notice after five minutes, run at speed 1, or use `exec <charger> offline --for` beside the run.
 - Each step prints what `exec` prints: one line per charger, and a count when there are several. `--format json` prints one object per charger and step, with `step`, `at` and `do` added to the fields `exec` gives.
 - A step that fails on a charger, or matches no charger, does not stop the run. Every failure is reported. `--fail-fast` stops at the first step that failed.
 - As for `exec`, a tag the CSMS rejects is an outcome and not a failure.

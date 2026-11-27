@@ -36,6 +36,14 @@ _Avoid_: EV profile, EV model, vehicle type
 A sequence of timed actions applied to the chargers of a running site.
 _Avoid_: Script, test, playbook
 
+**Speed**:
+How many times faster than real time the EVs of a site charge. A scenario runs at the speed of its site unless the run is given its own.
+_Avoid_: Time scale, multiplier, acceleration, rate
+
+**Scenario time**:
+Time as a scenario writes it, counted from the start of the run. It passes faster than real time by the speed of the run.
+_Avoid_: Simulated time, virtual time, step time
+
 **Charge point ID**:
 The identifier by which the CSMS knows a charger.
 _Avoid_: Charger ID, station ID, serial
