@@ -14,7 +14,7 @@
 services:
   plugyard:
     # A full version, so that the image never changes under you.
-    image: amraa1/plugyard:0.2.1
+    image: amraa1/plugyard:0.3.0
     command: ["site", "up", "--api", "0.0.0.0:7070"]
     environment:
       # Read by site.yaml. A CSMS on this server itself is reached at

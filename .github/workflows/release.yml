@@ -91,3 +91,25 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
             VERSION=${{ github.ref_name }}
+
+      # The overview of the image on Docker Hub is docker/README.md, with
+      # this release in place of the version its examples pin. A release
+      # with a suffix, such as v0.2.0-beta.1, leaves the overview alone.
+      - name: Put this release into the overview
+        if: steps.hub.outputs.ready == 'true' && !contains(github.ref_name, '-')
+        env:
+          TAG: ${{ github.ref_name }}
+        run: sed -i -E "s|amraa1/plugyard:[0-9]+\.[0-9]+\.[0-9]+|amraa1/plugyard:${TAG#v}|g" docker/README.md
+
+      # The token needs the scope "Read, Write, Delete" to change the
+      # overview. With a token that may only push, this step fails and the
+      # release and its image stand.
+      - uses: peter-evans/dockerhub-description@v5
+        if: steps.hub.outputs.ready == 'true' && !contains(github.ref_name, '-')
+        continue-on-error: true
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          repository: amraa1/plugyard
+          short-description: Simulates OCPP 1.6J EV chargers, to develop and test a CSMS without hardware.
+          readme-filepath: ./docker/README.md

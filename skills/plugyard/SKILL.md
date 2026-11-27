@@ -20,6 +20,8 @@ It is the guide for AI agents, and it matches the installed version: the rules, 
 
 If `plugyard` is not found, it is not installed. Ask the user before installing it. The install commands are at https://github.com/Amraa1/plugyard#install.
 
+Where Docker is installed, nothing needs installing: the image `amraa1/plugyard` is the same program. `docker run --rm amraa1/plugyard agents` prints the guide, which says how to run chargers in a container.
+
 ## Rules that always hold
 
 - **Start chargers in the background**: `plugyard site up -d`, or `plugyard run ... -d`. Without `-d` these commands never return. Neither do `plugyard logs -f` and `plugyard site logs -f`.

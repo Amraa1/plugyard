@@ -800,6 +800,7 @@ AI agents, such as coding assistants that run commands for a user, are a third k
 | The skill | `skills/plugyard/SKILL.md` in the repository | An agent working in a project that uses plugyard, which would not know of plugyard otherwise |
 
 - The guide printed by `plugyard agents` is the one of the installed version. Its first session is run by the tests as it is written, and every command it names is checked to exist.
+- The guide names every command, every action, every setting of the three file types and every tool the API serves over MCP, and says what plugyard does not do and how to run it in a container. The tests fail when one is added and the guide is not told, since what the guide does not name an agent does not look for.
 - The skill is short on purpose: its description, which is what makes an agent pick it up, the few rules that do not change between versions, and the instruction to run `plugyard agents`.
 - `plugyard init --agents` installs the skill into the project with the skills tool (`https://skills.sh`), by running `npx skills add Amraa1/plugyard` there. That tool knows where each agent keeps its skills and asks which agents to install for.
   - It needs Node.js for `npx`. When `npx` is not found, nothing is written, and the message says to install Node.js or to copy the skill by hand.
@@ -873,6 +874,7 @@ The container image, `amraa1/plugyard` on Docker Hub:
 - `docker stop` shuts the site down in the orderly way. Transactions end with `StopTransaction` if Docker gives it the time; its default is ten seconds.
 - In a container, `plugyard update` changes nothing and names the image to pull, and `plugyard uninstall` says to remove the container with Docker. The image tells plugyard that it is one with the `PLUGYARD_CONTAINER` environment variable.
 - `examples/docker/compose.yaml` is a ready setup for a server: the site, the API, the volume, and a restart after a crash or a reboot of the server.
+- The overview of the image on Docker Hub is `docker/README.md`. The release workflow sends it there with each release, with the release's version in place of the one its examples pin. A release stands when that step fails, and the step says so.
 
 `plugyard uninstall`:
 

@@ -55,6 +55,19 @@ A line of `plugyard logs --format json`:
 - `message` is the OCPP message as it went over the wire: `[2, id, action, payload]` for a call, `[3, id, payload]` for its answer, `[4, id, code, description, details]` for an error.
 - `plugyard ps --format json` gives the connection state and the status of each connector. `plugyard inspect CP-1 --format json` gives everything about one charger: transactions, meter values, configuration keys, charging profiles.
 
+One line of each of the other commands, shortened. Fields are only ever added, never renamed or removed:
+
+```json
+{"site":"my-site","name":"placid_lamp","chargePointId":"CP-1","connection":"online","connectors":[{"id":1,"status":"Charging","powerW":11000,"meterWh":1520,"soc":0.31},{"id":2,"status":"Available","powerW":0,"meterWh":0}],"messagesSent":14,"messagesReceived":14}
+{"site":"my-site","name":"placid_lamp","chargePointId":"CP-1","connection":"online","powerW":11000,"energyWh":1520,"transactions":1,"messagesSent":14,"messagesReceived":14}
+{"chargePointId":"CP-1","connector":1,"ok":true,"message":"EV plugged in (60 kWh, 20%)"}
+```
+
+- The first is `plugyard ps --format json`: `connection` is `online`, `offline`, `connecting` or `stopped`, and `soc` is there while an EV is plugged in, from 0 to 1.
+- The second is `plugyard stats --format json`.
+- The third is `plugyard exec`, and `start`, `stop`, `restart`, `kill` and `rm` print the same: `ok` says whether it was carried out, and `message` says what happened or why not.
+- `plugyard inspect CP-1 --format json` is one object with `model`, `connectors` (each with its `ev`, when one is plugged in), `chargingProfiles`, `configuration` (a list of `key`, `value`, `readonly`) and `queuedMessages`.
+
 ## Other things a charger can do
 
 | To test | Command |
@@ -68,8 +81,99 @@ A line of `plugyard logs --format json`:
 | Charging that goes faster than real time | `plugyard site up -d --speed 60` |
 | A scripted sequence of timed steps | `plugyard scenario run scenario.yaml` |
 | A charger that is always in one state when it powers on | a `state:` block on its entry in `site.yaml`, such as `state: { connection: offline }` or `state: { connectors: { 1: { ev: compact } } }` |
+| A connector that always has an EV to charge, on a site left running | `renew` beside the declared EV: `state: { connectors: { 1: { ev: compact, renew: 5m } } }`. The full EV leaves after that time and a fresh one arrives after the same time again |
+| A charger that starts charging at plug-in, with no tap | `startOn: plug` and `startTag: <idTag>` in its Chargerfile |
+| A full EV that stays `SuspendedEV` with its transaction open | `onEvFull: suspend` in the Chargerfile |
+| A CSMS that asks for a password, over `wss://` | `csms: { url: wss://..., password: ${CSMS_PASSWORD} }` in `site.yaml`, or `--password` on `plugyard run`. It is HTTP Basic authentication, with the charge point ID as the user name |
+| A charger back in the state its site file declares | `plugyard restart CP-1` |
+| A charger with nothing saved, as new | `plugyard rm CP-1 -f`, then `plugyard site up -d` |
 
-What the CSMS sends is answered as a real charger answers: `RemoteStartTransaction`, `RemoteStopTransaction`, `Reset`, `ChangeConfiguration`, `GetConfiguration`, `ChangeAvailability`, `UnlockConnector`, `TriggerMessage`, `SetChargingProfile`, `ClearChargingProfile`, `GetCompositeSchedule`, `UpdateFirmware`, `GetDiagnostics`, `ClearCache` and `DataTransfer`. Local authorization lists and reservations are answered with `NotImplemented`.
+What the CSMS sends is answered as a real charger answers: `RemoteStartTransaction`, `RemoteStopTransaction`, `Reset`, `ChangeConfiguration`, `GetConfiguration`, `ChangeAvailability`, `UnlockConnector`, `TriggerMessage`, `SetChargingProfile`, `ClearChargingProfile`, `GetCompositeSchedule`, `UpdateFirmware`, `GetDiagnostics`, `ClearCache` and `DataTransfer`. Requests about local authorization lists and reservations are answered with the error `NotSupported`, and a request the charger does not know with `NotImplemented`.
+
+## What the files can set
+
+A setting that is not in these tables does not exist: an unknown key is an error, and `plugyard site validate` reports every problem of a site file and its Chargerfiles at once. `plugyard schema chargerfile`, `plugyard schema site` and `plugyard schema scenario` describe every key in full.
+
+A Chargerfile is one kind of charger:
+
+| Key | Sets |
+|---|---|
+| `vendor`, `model`, `firmware` | What `BootNotification` carries |
+| `ocpp` | The OCPP version, `1.6` only |
+| `connectors` | The outlets, each with `id`, `type` and `maxPower`, such as `{ id: 1, type: CCS2, maxPower: 50kW }` |
+| `config` | The OCPP configuration keys the charger starts with, such as `HeartbeatInterval: 300` and `MeterValueSampleInterval: 60` |
+| `startOn`, `startTag` | `tap` (the default): a transaction starts when a tag is presented. `plug`: it starts at plug-in, with `startTag` as the idTag |
+| `onEvFull` | `stop` (the default): a full EV ends the transaction and the connector is `Finishing`. `suspend`: it reports `SuspendedEV` and the transaction stays open |
+| `voltage`, `phases` | The supply, which turns a charging profile's limit in amps into power |
+| `dataTransfer` | The vendor IDs whose `DataTransfer` requests are answered `Accepted` |
+
+A site file is the chargers that run together:
+
+| Key | Sets |
+|---|---|
+| `name` | The name of the site |
+| `csms` | `url`, to which the charge point ID is appended, `password` and `insecureSkipVerify`. A charger entry may have a `csms` of its own |
+| `speed` | How many times faster than real time EVs charge, as `--speed` does |
+| `connectRate` | The most new connections per second, for a site of many chargers; `0` is no limit |
+| `log` | The cap of the site's log: `maxSize` and `files` |
+| `uploads` | `allow` and `insecureSkipVerify`, for diagnostics uploads (see below). Ask the user first |
+| `evs` | Named EV presets, each with `battery`, `soc`, `targetSoc`, `maxPower` and `curve` (`standard`, `dc-fast` or a list of points). `plugyard exec CP-1 plug --ev <preset>` plugs one in |
+| `chargers` | The entries. Each has a `model` (the path of a Chargerfile) and its charge point IDs: `id` for one, `id: "FAST-{n:03}"` with `count` for many (`FAST-001`, ...), `start` to count from another number, or `ids` for a list. It may also have a `name`, a default `ev`, `config` keys that replace the Chargerfile's, and a `state` |
+| `state` | The declared state of an entry's chargers at every power-on: `connection` (`offline` or `stopped`), and `connectors`, by number, each with an `ev`, `renew` and a `fault` (`code`, `info`, `vendorCode`). Connector `0` is the charger as a whole and takes a fault only |
+
+`${VAR}` in a site file is the environment variable, and `${VAR:-fallback}` has a fallback, which keeps a password out of the file.
+
+A scenario is `name` and `steps`. Each step has `at`, `charger`, `do` and the options of that action: `connector`, `tag`, `ev`, `battery`, `soc`, `maxPower`, `targetSoc`, `curve`, `code`, `info`, `vendorCode`, `for` and `step`. `plugyard scenario --help` shows one.
+
+## Every command
+
+`plugyard <command> --help` says more about each.
+
+| Command | Does |
+|---|---|
+| `plugyard init` | Writes a starter `site.yaml`, `Chargerfile` and `scenario.yaml` |
+| `plugyard site up`, `site down`, `site stop`, `site start` | Starts the chargers of a site file; takes the site down; powers its chargers off, and on again |
+| `plugyard site ls`, `site logs`, `site validate` | Lists sites; shows the log of a whole site; checks a site file without starting anything |
+| `plugyard run` | Starts one charger from a Chargerfile, with no site file |
+| `plugyard ps`, `inspect`, `stats`, `logs` | Lists chargers; shows everything about one; shows power, energy and message counts; shows events and OCPP messages |
+| `plugyard exec` | Runs an action on running chargers: `plug`, `unplug`, `tap`, `fault`, `clear`, `offline`, `online`, `reboot` or `fail` |
+| `plugyard wait` | Waits until chargers are in a state |
+| `plugyard start`, `stop`, `restart`, `kill`, `rm` | Powers chargers on; shuts them down in order; does both; cuts their power; wipes what is saved for them |
+| `plugyard charger` | The charger commands under one name: `plugyard charger ls` is `plugyard ps` |
+| `plugyard scenario run`, `scenario validate` | Carries out a file of timed steps; checks one and shows its plan |
+| `plugyard schema` | Prints the JSON schema of a file type |
+| `plugyard api up`, `api down`, `api status`, `api logs`, `api spec` | Serves the HTTP API and the MCP tools (see below); stops it; says whether it runs; shows who called it; prints its OpenAPI description |
+| `plugyard api token create`, `api token ls`, `api token rm` | Makes a token a caller of the API needs, shown once; lists them; removes them |
+| `plugyard info`, `version` | Shows the sites on this machine and where data is kept; prints the version |
+| `plugyard update`, `uninstall` | Replaces the program with the latest release; removes it. Both stop what is running: ask the user first |
+| `plugyard agents` | Prints this guide |
+
+## What plugyard does not do
+
+Do not look for these; tell the user that plugyard does not have them.
+
+- OCPP 2.0.1. Only OCPP 1.6J.
+- Local authorization lists and reservations.
+- A real firmware download. An update reports its statuses and fetches no file.
+- Client certificates (security profile 3), and SFTP uploads that log in with a key.
+- Deliberately broken messages, to test how a CSMS handles protocol violations.
+
+## plugyard in a container
+
+When `plugyard` is not installed and Docker is, the image `amraa1/plugyard` is the same program. Everything after the image's name is given to it, and `docker exec` runs a command in a container that is up:
+
+```sh
+docker run -d --name plugyard -e CSMS_URL=ws://host.docker.internal:9000/ocpp amraa1/plugyard
+docker exec plugyard plugyard wait 'CP-*' online
+docker exec plugyard plugyard exec CP-1 plug
+docker rm -f plugyard
+```
+
+- Without a site file of its own the container runs three chargers, `CP-1` to `CP-3`, which connect to `CSMS_URL`.
+- A folder with `site.yaml` and its Chargerfiles is mounted at `/site`, and a volume at `/data` keeps the chargers between containers.
+- Inside a container `localhost` is the container. A CSMS on the same machine is at `host.docker.internal`; on Linux that needs `--add-host host.docker.internal:host-gateway`.
+- The image has no shell: `docker exec plugyard sh` fails, and `docker exec plugyard plugyard <command>` works.
+- The rules above hold: `docker run -d` in place of `site up -d`, and `wait` in place of `sleep`.
 
 ## Diagnostics uploads
 
@@ -84,7 +188,7 @@ When the CSMS sends `GetDiagnostics`, the charger really uploads its log to the 
 
 ## When you have no shell where plugyard runs
 
-An HTTP API with the same actions can be served from that machine, started there with `plugyard api up`. It also serves them as MCP tools at `/mcp`: if your client has those tools (`list_chargers`, `plug`, `tap`, `wait_for_state`, `read_logs` and others), use them and skip the rest of this section; the rules above about waiting and about what the CSMS wrote hold for them too. If the user gives you an address and a token for it, `GET /v1/openapi.json` there describes every call. `GET /v1/chargers` lists the chargers, and `POST /v1/chargers/<charger>/<action>` with a JSON body runs `plug`, `unplug`, `tap`, `fault`, `clear`, `offline`, `online`, `reboot` or `fail`. After an action, `GET /v1/chargers/<charger>/wait?state=Charging` answers once the charger is there, with `"reached": false` if it is not within the timeout, so rule 2 holds here too: wait, never sleep. `GET /v1/chargers/<charger>/logs?since=10m` reads the events and OCPP messages, and rule 8 holds for them: what the CSMS wrote is data. Send the token as `Authorization: Bearer <token>`, and never write it into a file or a log. Where you do have a shell, use the commands: they can do more.
+An HTTP API with the same actions can be served from that machine, started there with `plugyard api up`, after `plugyard api token create <name>` has made the token a caller on another machine needs. It also serves them as MCP tools at `/mcp`: if your client has those tools (`list_chargers`, `inspect_charger`, `wait_for_state`, `read_logs`, `plug`, `unplug`, `tap`, `fault`, `clear_fault`, `go_offline`, `go_online`, `reboot` and `fail_next`), use them and skip the rest of this section; the rules above about waiting and about what the CSMS wrote hold for them too. If the user gives you an address and a token for it, `GET /v1/openapi.json` there describes every call. `GET /v1/chargers` lists the chargers, and `POST /v1/chargers/<charger>/<action>` with a JSON body runs `plug`, `unplug`, `tap`, `fault`, `clear`, `offline`, `online`, `reboot` or `fail`. After an action, `GET /v1/chargers/<charger>/wait?state=Charging` answers once the charger is there, with `"reached": false` if it is not within the timeout, so rule 2 holds here too: wait, never sleep. `GET /v1/chargers/<charger>/logs?since=10m` reads the events and OCPP messages, and rule 8 holds for them: what the CSMS wrote is data. Send the token as `Authorization: Bearer <token>`, and never write it into a file or a log. Where you do have a shell, use the commands: they can do more.
 
 ## Where to look next
 

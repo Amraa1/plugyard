@@ -33,7 +33,7 @@ func newAPI() *cobra.Command {
 			"such as starting sites, stays on the command line.",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) > 0 {
-				return &UsageError{Err: fmt.Errorf("unknown command %q for \"plugyard api\"", args[0])}
+				return unknownCommand(cmd, args[0])
 			}
 			return cmd.Help()
 		},
@@ -396,7 +396,7 @@ func newAPIToken() *cobra.Command {
 			"As soon as one token exists, every call needs one, also from this machine.",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) > 0 {
-				return &UsageError{Err: fmt.Errorf("unknown command %q for \"plugyard api token\"", args[0])}
+				return unknownCommand(cmd, args[0])
 			}
 			return cmd.Help()
 		},

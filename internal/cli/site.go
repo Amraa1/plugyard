@@ -30,7 +30,7 @@ func newSite() *cobra.Command {
 			"site.yaml in the current directory, and started and stopped together.",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) > 0 {
-				return &UsageError{Err: fmt.Errorf("unknown command %q for \"plugyard site\"", args[0])}
+				return unknownCommand(cmd, args[0])
 			}
 			return cmd.Help()
 		},
@@ -117,7 +117,9 @@ func newSiteUp() *cobra.Command {
 			"instead.\n\n" +
 			"A charger entry with a \"state\" block declares the state its chargers are\n" +
 			"in each time they power on, whatever was saved: offline, stopped, faulted\n" +
-			"or with an EV plugged in. One declared stopped is created and left off.\n\n" +
+			"or with an EV plugged in. One declared stopped is created and left off.\n" +
+			"A declared EV that says \"renew\", such as \"renew: 5m\", leaves that long\n" +
+			"after it is full, and a fresh one arrives that long after it left.\n\n" +
 			"When the file has changed so that saved state would be lost, for example\n" +
 			"because a charger was removed from it, the affected chargers are listed\n" +
 			"and nothing happens until you agree. --yes agrees in advance.\n\n" +

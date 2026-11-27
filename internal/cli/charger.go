@@ -1,8 +1,6 @@
 package cli
 
 import (
-	"fmt"
-
 	"github.com/spf13/cobra"
 )
 
@@ -19,7 +17,7 @@ func newCharger() *cobra.Command {
 			"is \"plugyard ps\", \"plugyard charger exec\" is \"plugyard exec\", and so on.",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) > 0 {
-				return &UsageError{Err: fmt.Errorf("unknown command %q for \"plugyard charger\"", args[0])}
+				return unknownCommand(cmd, args[0])
 			}
 			return cmd.Help()
 		},
