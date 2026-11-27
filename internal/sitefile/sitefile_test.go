@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Amraa1/plugyard/internal/charger"
 	"github.com/Amraa1/plugyard/internal/ev"
@@ -520,5 +521,42 @@ chargers:
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error does not mention %q:\n%v", want, err)
 		}
+	}
+}
+
+func TestDeclaredEVRenewal(t *testing.T) {
+	site := mustParse(t, `
+name: s
+csms: { url: ws://localhost/ocpp }
+evs: { compact: { battery: 40kWh } }
+chargers:
+  lobby:
+    model: ./ac.Chargerfile
+    id: LOBBY-1
+    state: { connectors: { 1: { ev: compact, renew: 1m30s } } }
+`, nil)
+	k := site.Chargers()[0].Declared.Connectors[0]
+	if k.EV == nil || k.EV.Preset != "compact" || k.EV.Renew != 90*time.Second {
+		t.Errorf("declared EV = %+v, want compact, renewed after 1m30s", k.EV)
+	}
+
+	entry := func(connector string) string {
+		return "name: s\ncsms: { url: ws://localhost/ocpp }\nevs: { compact: { battery: 40kWh } }\n" +
+			"chargers:\n  e: { model: ./ac.Chargerfile, id: A, state: { connectors: { 1: { " + connector + " } } } }\n"
+	}
+	for name, tc := range map[string]struct{ yaml, wantErr string }{
+		"renew with no EV":      {entry("renew: 5m"), "chargers.e: state: connectors.1: renew: there is no EV to renew; give ev as well"},
+		"a time with no unit":   {entry("ev: compact, renew: 5"), `connectors.1: renew: "5" is not a time; write it as 30s, 5m or 1h30m`},
+		"a time of nothing":     {entry("ev: compact, renew: 0s"), "connectors.1: renew: the time must be above 0"},
+		"a time before now":     {entry("ev: compact, renew: -5m"), "connectors.1: renew: the time must be above 0"},
+		"renew beside a fault":  {entry("fault: GroundFailure, renew: 5m"), "renew: there is no EV to renew"},
+		"renew that is a block": {entry("ev: compact, renew: { after: 5m }"), "chargers.e: state: connectors.1"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := parse(t, tc.yaml, nil)
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Errorf("error = %v, want it to contain %q", err, tc.wantErr)
+			}
+		})
 	}
 }

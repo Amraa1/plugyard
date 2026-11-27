@@ -317,6 +317,12 @@ chargers:
     state:
       connectors:
         1: { ev: longrange }           # an EV is plugged in: Preparing
+  wall:
+    model: ./wallbox.Chargerfile
+    id: "WALL-1"
+    state:
+      connectors:
+        1: { ev: longrange, renew: 5m }   # and a fresh one comes when it is full
   bay:
     model: ./Chargerfile
     id: "BAY-1"
@@ -346,6 +352,7 @@ chargers:
 | `connection: stopped` | `site up` and `site start` create the charger and leave it powered off. `plugyard start <charger>` powers it on until it is stopped |
 | `connectors` | Connectors by number. `0` is the charger as a whole, as with `exec --connector 0` |
 | `ev: <preset>` | An EV of that EV preset is plugged in. Not for connector `0` |
+| `renew: <time>` | The declared EV is renewed when it is done (below). A time such as `30s`, `5m` or `1h30m`. Only beside `ev` |
 | `fault: <errorCode>` | The connector reports the fault. The long form gives `code`, `info` and `vendorCode`, as the `fault` step of a scenario does |
 
 - **Declared state is applied every time the charger powers on**, by any command: `site up`, `site start`, `start`, `restart`, and a start after `kill`. Where it speaks, it takes the place of the saved state (ADR 0009). A reboot and a `Reset` from the CSMS are not a power-on and apply nothing.
@@ -353,6 +360,14 @@ chargers:
 - **A connector that is listed is declared whole**: with no `ev` nothing is plugged in, and with no `fault` it has none. A connector that is not listed follows the saved state.
 - **What the CSMS set is not declared and still persists.** A connector it made `Unavailable` stays so, and meter readings are untouched.
 - **A declared EV is a new arrival each time**: a fresh EV at the preset's starting state of charge, in place of any EV in the saved state. Its parameters are worked out as for a plug that names the preset. On a model with `startOn: plug` a transaction starts with `startTag` at power-on, and the CSMS hears of it once the charger has booted.
+- **A declared EV with `renew` is renewed when it is done**, so that its connector stays of use with nobody running `unplug` and `plug`: `1: { ev: longrange, renew: 5m }`.
+  - An EV is done when it is at its target and its connector has no transaction. One whose transaction ended before it was full is not done: it can be charged again without unplugging (section 8).
+  - The EV leaves after the `renew` time, as `unplug` does, and a fresh one arrives after the same time again, as `plug` does. The connector reports `Finishing`, `Available`, `Preparing`.
+  - The time is real time, whatever the speed of the site, so that each status lasts long enough to be seen.
+  - With `startOn: plug` the fresh EV starts a transaction, and the connector keeps cycling through `Charging`.
+  - With `onEvFull: suspend` the transaction stays open, so the EV is not done and the connector stays `SuspendedEV`.
+  - Only the declared EV is renewed. An EV plugged in by hand never is, and it takes the place of a fresh one that was on its way. When the declared EV is unplugged by hand, nothing arrives until the charger next powers on.
+  - This is the one part of declared state that acts between power-ons.
 - **A site whose chargers are all declared `stopped`** comes up with none powered on. `site up` and `site start` say so, with exit code `0`.
 - On an entry with `count` above 1 the block applies to every charger of the entry.
 - `inspect` shows a charger's declared state, and `site validate` shows it beside each entry. `ps -a` shows a stopped charger with the statuses its declared state gives it.

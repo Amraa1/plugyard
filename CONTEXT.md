@@ -60,6 +60,10 @@ _Avoid_: Snapshot, persistence, volume
 The state a site file says a charger is in each time it powers on, such as offline, faulted or with an EV plugged in. Where it speaks, it takes the place of the saved state.
 _Avoid_: Starting state, initial state (it holds at every power-on, not only the first), desired state (nothing enforces it between power-ons)
 
+**Renewal**:
+The replacing of a declared EV that is done by a fresh one: the full EV leaves its connector, and after a while another of the same EV preset arrives.
+_Avoid_: Respawn, turnover, swap, replacement, refresh
+
 **CSMS**:
 The backend system under test that chargers connect to and exchange OCPP messages with.
 _Avoid_: Central system, backend, server

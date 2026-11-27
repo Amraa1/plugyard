@@ -253,6 +253,8 @@ chargers:
 
 Declared state wins over what was saved, every time the charger powers on, so a restart of the server cannot drift from the file. What you change by hand, with `exec` or a scenario, lasts until then, and `plugyard restart BAY-1` puts one charger back. A charger declared `stopped` starts with `plugyard start SPARE-1`. `plugyard site validate` and `plugyard inspect` show what is declared.
 
+A plugged-in EV fills up in the end, and a full one ends every new transaction at once. Add `renew` to have it replaced: `1: { ev: longrange, renew: 5m }`. Five minutes after the EV is full and its transaction has ended it leaves, and five minutes later a fresh one arrives, so the connector goes through `Finishing`, `Available` and `Preparing` with nobody running `unplug` and `plug`. On a charger that starts on plug-in, it then charges again by itself.
+
 ### Test what goes wrong
 
 Real chargers fail, and a CSMS has to cope. plugyard lets you cause the failures you would otherwise wait months to see in the field, one command each.

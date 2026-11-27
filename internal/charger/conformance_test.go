@@ -81,36 +81,62 @@ func freePort(t *testing.T) int {
 	return l.Addr().(*net.TCPAddr).Port
 }
 
+// bootAgainstCentralSystem powers a charger on against a central system of
+// ocpp-go and waits until heard reports that the central system has heard
+// what the test needs. heard is called with rec.mu held.
+//
+// ocpp-go takes a port number and not a listener, so the port freePort found
+// can be taken before ocpp-go listens on it. ocpp-go then gives up without a
+// word, and the charger dials whoever holds the port. An attempt that hears
+// nothing is therefore made again on another port.
+func bootAgainstCentralSystem(t *testing.T, heard func(rec *recordingCentralSystem) bool) (ocpp16.CentralSystem, *recordingCentralSystem) {
+	t.Helper()
+	const attempts = 3
+	for attempt := 1; attempt <= attempts; attempt++ {
+		rec := &recordingCentralSystem{}
+		cs := ocpp16.NewCentralSystem(nil, nil)
+		cs.SetCoreHandler(rec)
+
+		port := freePort(t)
+		go cs.Start(port, "/{ws}")
+		var once sync.Once
+		stop := func() { once.Do(cs.Stop) }
+		t.Cleanup(stop)
+
+		// The charger retries until the central system is listening.
+		r := powerOn(t, charger.Config{
+			ID:   "CP-1",
+			CSMS: charger.CSMS{URL: fmt.Sprintf("ws://127.0.0.1:%d", port)},
+		})
+
+		deadline := time.Now().Add(5 * time.Second)
+		for time.Now().Before(deadline) {
+			rec.mu.Lock()
+			done := heard(rec)
+			rec.mu.Unlock()
+			if done {
+				return cs, rec
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+
+		t.Logf("attempt %d of %d: the central system on port %d did not hear from the charger; its log ends:", attempt, attempts, port)
+		r.log.mu.Lock()
+		for _, e := range r.log.entries[max(0, len(r.log.entries)-10):] {
+			t.Logf("  %s", e.Text)
+		}
+		r.log.mu.Unlock()
+		r.stop()
+		stop()
+	}
+	t.Fatal("the charger did not boot against the central system")
+	return nil, nil
+}
+
 func TestHandshakeAgainstIndependentCentralSystem(t *testing.T) {
-	rec := &recordingCentralSystem{}
-	cs := ocpp16.NewCentralSystem(nil, nil)
-	cs.SetCoreHandler(rec)
-
-	port := freePort(t)
-	go cs.Start(port, "/{ws}")
-	t.Cleanup(cs.Stop)
-
-	// The charger retries until the central system is listening.
-	powerOn(t, charger.Config{
-		ID:   "CP-1",
-		CSMS: charger.CSMS{URL: fmt.Sprintf("ws://127.0.0.1:%d", port)},
-	})
-
 	// A heartbeat arrives only after ocpp-go has accepted the
 	// BootNotification and both StatusNotifications as valid.
-	deadline := time.Now().Add(10 * time.Second)
-	for {
-		rec.mu.Lock()
-		done := rec.beats >= 1
-		rec.mu.Unlock()
-		if done {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("no heartbeat reached the central system")
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	_, rec := bootAgainstCentralSystem(t, func(rec *recordingCentralSystem) bool { return rec.beats >= 1 })
 
 	rec.mu.Lock()
 	defer rec.mu.Unlock()
@@ -134,31 +160,7 @@ func TestHandshakeAgainstIndependentCentralSystem(t *testing.T) {
 }
 
 func TestSmartChargingAgainstIndependentCentralSystem(t *testing.T) {
-	rec := &recordingCentralSystem{}
-	cs := ocpp16.NewCentralSystem(nil, nil)
-	cs.SetCoreHandler(rec)
-
-	port := freePort(t)
-	go cs.Start(port, "/{ws}")
-	t.Cleanup(cs.Stop)
-
-	powerOn(t, charger.Config{
-		ID:   "CP-1",
-		CSMS: charger.CSMS{URL: fmt.Sprintf("ws://127.0.0.1:%d", port)},
-	})
-	deadline := time.Now().Add(10 * time.Second)
-	for {
-		rec.mu.Lock()
-		booted := len(rec.statuses) >= 2
-		rec.mu.Unlock()
-		if booted {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("the charger did not boot against the central system")
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	cs, _ := bootAgainstCentralSystem(t, func(rec *recordingCentralSystem) bool { return len(rec.statuses) >= 2 })
 
 	// ocpp-go builds each request and validates each answer.
 	fail := make(chan error, 3)

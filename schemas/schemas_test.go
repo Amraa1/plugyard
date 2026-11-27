@@ -140,7 +140,7 @@ chargers:
       connection: offline
       connectors:
         0: { fault: InternalError }
-        1: { ev: compact, fault: { code: GroundFailure, info: RCD tripped, vendorCode: E42 } }
+        1: { ev: compact, renew: 5m, fault: { code: GroundFailure, info: RCD tripped, vendorCode: E42 } }
         2: {}
   spare: { model: ./Chargerfile, id: SPARE-1, state: { connection: stopped } }
 `,

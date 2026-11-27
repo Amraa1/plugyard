@@ -55,6 +55,9 @@ type connector struct {
 	// finishing is set when a transaction has ended and the EV is still
 	// plugged in.
 	finishing bool
+	// renewal keeps the connector's declared EV renewed, or is nil. It ends
+	// when an EV is plugged in or unplugged by hand.
+	renewal *renewal
 }
 
 type transaction struct {
@@ -285,6 +288,9 @@ func (c *Charger) Plug(ctx context.Context, connectorID int, params ev.Params) (
 
 	k.ev = ev.New(params)
 	k.finishing = false
+	// An EV plugged in by hand is not renewed, and takes the place of a
+	// fresh one that was on its way.
+	k.renewal = nil
 	c.dirty = true
 	outcome := fmt.Sprintf("EV plugged in (%s kWh, %.0f%%)",
 		strconv.FormatFloat(params.BatteryWh/1000, 'f', -1, 64), params.SoC*100)
@@ -335,6 +341,8 @@ func (c *Charger) Unplug(connectorID int) (string, error) {
 	}
 	k.ev = nil
 	k.finishing = false
+	// Unplugged by hand, the declared EV is not renewed.
+	k.renewal = nil
 	c.event("connector %d: EV unplugged", k.id)
 	c.reportStatus(k)
 	return outcome, nil
@@ -722,6 +730,7 @@ func (c *Charger) tick(now time.Time) {
 	c.stepTransfers(now)
 
 	for _, k := range c.connectors {
+		c.renew(k, now)
 		tx := k.tx
 		if tx == nil || k.ev == nil {
 			continue

@@ -208,3 +208,38 @@ chargers:
 	csms.WaitForCalls(t, "SPARE-2", v16.ActionBootNotification, 1)
 	psShows(t, "SPARE-1", " stopped 1:Available")
 }
+
+func TestARenewedEVIsShownAndComesBack(t *testing.T) {
+	useTempDataDir(t)
+	csms := csmstest.Start(t)
+	path := writeSite(t, csms.URL(), `
+name: staging
+evs:
+  small: { battery: 40kWh, soc: 79%, targetSoc: 80% }
+chargers:
+  lobby: { model: ./Chargerfile, id: LOBBY-1, state: { connectors: { 1: { ev: small, renew: 1s } } } }
+`)
+
+	want := "  lobby  1 charger  LOBBY-1  Acme Wallbox  declared: connector 1 with EV small (renewed after 1s)\n"
+	if code, stdout, stderr := run("site", "validate", "-f", path); code != ExitOK || !strings.Contains(stdout, want) {
+		t.Errorf("site validate: exit %d, stderr %q, stdout:\n%s\nwant it to contain:\n%s", code, stderr, stdout, want)
+	}
+
+	startSiteUp(t, csms, path, []string{"LOBBY-1"}, "--speed", "3600")
+	if _, stdout, _ := run("inspect", "LOBBY-1"); !strings.Contains(stdout, "  Declared    connector 1 with EV small (renewed after 1s)\n") {
+		t.Errorf("inspect LOBBY-1 does not show the renewal:\n%s", stdout)
+	}
+
+	// The EV fills up, its transaction ends, it leaves, and a fresh one
+	// arrives: the renew time is real time, whatever the speed.
+	if code, stdout, stderr := run("exec", "LOBBY-1", "tap", "TAG-1"); code != ExitOK {
+		t.Fatalf("tap: exit %d, stdout %q, stderr %q", code, stdout, stderr)
+	}
+	csms.WaitForCalls(t, "LOBBY-1", v16.ActionStopTransaction, 1)
+	psShows(t, "LOBBY-1", " online 1:Finishing")
+	psShows(t, "LOBBY-1", " online 1:Available")
+	psShows(t, "LOBBY-1", " online 1:Preparing")
+	if _, stdout, _ := run("inspect", "LOBBY-1"); !strings.Contains(stdout, "EV: 79% of 40 kWh") {
+		t.Errorf("inspect LOBBY-1 does not show a fresh EV:\n%s", stdout)
+	}
+}
